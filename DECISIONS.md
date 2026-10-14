@@ -218,3 +218,17 @@ Day 2 落地时发现，Prisma 7 与培训数据里的 Prisma 6 有大量破坏�
 ### 为什么把 NextAuth 的表一并建好
 
 `User` / `Account` / `Session` / `VerificationToken` 的字段名是 Auth.js Prisma 适配器约定好的，不能随意改。Day 2 一次建好，Day 3 接认证时就不用再产生一次迁移；`User.passwordHash` 设为可空，同时兼容 OAuth 与邮箱密码两种登录方式。
+
+### 数据库客户端必须惰性初始化（2026-10-14 修正）
+
+**现象**：Day 2 推送到 Vercel 后构建失败，报错是 `缺少环境变量 DATABASE_URL`，堆栈指向 `lib/prisma.ts` 的模块顶层。
+
+**原因**：`next build` 在"收集路由信息"阶段会求值被引用模块的顶层代码。`.env` 不入库，Vercel 构建期也没有注入 `DATABASE_URL`，于是顶层 `throw` 直接中断构建。Day 1 没有 Prisma，所以同一套配置部署正常。
+
+**决定**：`lib/prisma.ts` 只导出 `getPrisma()`，首次真正查询时才创建客户端并读取环境变量。
+
+- 构建期不再需要任何数据库凭据；线上万一缺变量，退化成 `/api/health` 返回 503，而不是构建红灯。
+- 调用方必须在函数体内调用 `getPrisma()`，不要写 `import { prisma }`——那个导出已经不存在，写错会直接类型报错。
+- Day 3 接 NextAuth 时注意同样的问题：`PrismaAdapter(...)` 不要写在模块顶层。
+
+**连接串的两种形态**：本地 `file:./dev.db`；线上远端 libSQL（Turso）为 `libsql://...` + `DATABASE_AUTH_TOKEN`。两者共用 `@prisma/adapter-libsql`，schema provider 和已有迁移都不用动，这是当前最省的上线路径。
