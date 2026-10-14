@@ -46,14 +46,23 @@
 - [x] 初始化 Git 仓库
 - [x] 推送到 GitHub (main 分支)
 
+### ✅ Day 2 - 数据库 + ORM 配置完成
+- [x] 初始化 Prisma（7.10.0 ORM CLI）
+- [x] 配置 SQLite 本地数据库
+- [x] 设计数据模型（认证 4 张表 + 业务 2 张表）
+- [x] 生成 Prisma Client
+- [x] 创建迁移文件（`20261014073756_init`）
+- [x] 配置 driver adapter（Prisma 7 强制要求）
+- [x] 端到端验证：`/api/health` 读写通过、`next build` 通过
+
 ## 下一步
 
 ### 🚀 Day 2 - 数据库 + ORM 配置
-- [ ] 初始化 Prisma
-- [ ] 配置 SQLite 本地数据库
-- [ ] 设计数据模型（User, Bookmark, Tag）
-- [ ] 生成 Prisma Client
-- [ ] 创建迁移文件
+- [x] 初始化 Prisma
+- [x] 配置 SQLite 本地数据库
+- [x] 设计数据模型（User, Bookmark, Tag）
+- [x] 生成 Prisma Client
+- [x] 创建迁移文件
 
 ### 🔐 Day 3 - 用户认证
 - [ ] 安装 NextAuth.js

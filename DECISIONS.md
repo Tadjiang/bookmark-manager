@@ -62,7 +62,7 @@
 2. **开发体验优秀**
    - 启动快速
    - 调试方便
-   - 易于版本控制（sqlite.db 可提交）
+   - 数据库文件不入库（`dev.db` 已加入 `.gitignore`，只提交迁移脚本）
 
 3. **成本低**
    - 免费、开源
@@ -101,9 +101,19 @@ model Bookmark {
 }
 ```
 
-**迁移策略**：
-1. 本地开发：`prisma migrate dev`（生成 SQLite 迁移）
-2. 线上部署：`prisma migrate deploy`（同样的迁移脚本在 PostgreSQL 运行）
+**迁移策略**（2026-10-14 修正）：
+
+原先写的"同一套迁移脚本在 SQLite 和 PostgreSQL 两端运行"是行不通的，原因有两点：
+
+1. `datasource.provider` 只能有一个值，无法同时支持两种数据库；
+2. `prisma migrate deploy` 是直接执行 `prisma/migrations/` 下的 SQL 文件，而 `migrate dev` 在 SQLite 上生成的是 SQLite 方言（`INTEGER PRIMARY KEY AUTOINCREMENT`、`PRAGMA` 等），在 PostgreSQL 上会直接语法报错。
+
+因此实际策略是：
+
+1. 本地开发：`prisma migrate dev`，走 SQLite；
+2. 上线切换：用 `prisma migrate diff --from-empty --to-schema-datamodel` 针对 PostgreSQL 生成一份 baseline，此后以 PostgreSQL 为唯一数据源，本地开发也指向同一个引擎（例如云端 dev 分支），避免两套迁移历史长期分叉。
+
+**注意**：这套双库方案只在"开发 → 上线"切换时用一次。切换之后如果还想同时维护 SQLite 和 PostgreSQL 两套迁移，成本会很高，不建议。
 
 ---
 
@@ -179,3 +189,32 @@ Free Plan       → Pro Plan        → 按需付费
 | **部署** | Vercel | 零运维、官方推荐、成本低 |
 
 这些决策优先考虑 **MVP 阶段的快速迭代**，后续可根据业务增长灵活调整。
+
+---
+
+## 4. Prisma 7 的实际形态（2026-10-14 补充）
+
+### 背景
+
+Day 2 落地时发现，Prisma 7 与培训数据里的 Prisma 6 有大量破坏性差异，且 npm 上的版本标签存在陷阱。记录下来，避免后续重复踩坑。
+
+### 关键差异
+
+| 事项 | Prisma 6 的写法 | Prisma 7 的实际要求 |
+|-----|---------------|------------------|
+| 安装 | `npm i -D prisma` 即可 | npm 的 `latest` 标签指向 **8.0.0-rc 平台 CLI**，必须显式 `prisma@7.10.0` |
+| 配置文件 | `package.json` 的 `prisma` 字段 或 `prisma.config.ts` | `prisma7.config.ts`（文件名带主版本号） |
+| `.env` 加载 | 自动加载 | **不自动加载**，需 `import "dotenv/config"` + `dotenv` 依赖 |
+| 连接串位置 | `datasource` 块里的 `url` | 移到 `prisma7.config.ts` 的 `datasource.url`，schema 里只留 `provider` |
+| 查询引擎 | Rust 引擎内置 | **移除**，必须显式传 driver adapter |
+| 生成器 | `prisma-client-js` | `prisma-client`，**必须**指定 `output` |
+| 客户端导入 | `@prisma/client` | 生成的目录，如 `@/app/generated/prisma/client` |
+
+### 两个环境相关的坑
+
+1. **driver adapter 的选择**：`@prisma/adapter-better-sqlite3` 依赖 `better-sqlite3`，其预编译二进制需从 GitHub 下载（本机超时），回退本地编译又需要 Python（本机不可用）。改用 `@prisma/adapter-libsql`，其原生二进制以 npm 包（`@libsql/win32-x64-msvc`）分发，走 registry 即可装上。
+2. **`prisma dev`（本地 Prisma Postgres）不可用**：该子命令在运行时通过 npm 动态下载 `@prisma/cli-dev`，本机环境无法完成，且官方文档标注本地栈尚不支持 Windows。因此本地开发固定用 SQLite 文件。
+
+### 为什么把 NextAuth 的表一并建好
+
+`User` / `Account` / `Session` / `VerificationToken` 的字段名是 Auth.js Prisma 适配器约定好的，不能随意改。Day 2 一次建好，Day 3 接认证时就不用再产生一次迁移；`User.passwordHash` 设为可空，同时兼容 OAuth 与邮箱密码两种登录方式。
