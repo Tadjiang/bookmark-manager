@@ -1,8 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 书签管理器
+
+极简书签管理器 MVP：快速保存、组织、搜索书签。
+
+## 技术栈
+
+- **框架**：Next.js 16 (App Router) + React 19 + TypeScript
+- **样式**：Tailwind CSS 4
+- **数据库 / ORM**：Prisma 7 + SQLite（本地开发），PostgreSQL（线上）
+- **部署**：Vercel
+
+## 项目进度
+
+| 阶段 | 内容 | 状态 |
+| ---- | ---- | ---- |
+| Day 1 | 初始化 + 部署 | ✅ 已完成 |
+| Day 2 | 数据库 + ORM 配置 | ✅ 已完成 |
+| Day 3 | 用户认证 | ⏳ 未开始 |
+| Day 4 | 书签 CRUD | ⏳ 未开始 |
+| Day 5 | UI 优化 + 部署 | ⏳ 未开始 |
+
+详细任务清单见 [TASKS.md](./TASKS.md)，架构决策记录见 [DECISIONS.md](./DECISIONS.md)。
 
 ## Getting Started
 
-First, run the development server:
+首次运行前需要准备好数据库连接：
+
+```bash
+# 1. 安装依赖（postinstall 会自动生成 Prisma Client）
+npm install
+
+# 2. 从模板创建环境变量文件（PowerShell: Copy-Item .env.example .env）
+cp .env.example .env
+
+# 3. 应用数据库迁移
+npx prisma migrate dev
+```
+
+然后启动开发服务器：
 
 ```bash
 npm run dev
