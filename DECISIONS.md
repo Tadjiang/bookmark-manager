@@ -184,7 +184,7 @@ Free Plan       → Pro Plan        → 按需付费
 | 决策 | 选择 | 核心原因 |
 |-----|-----|--------|
 | **框架** | Next.js + TS | 全栈一体、开发效率、生态成熟 |
-| **DB** | SQLite (dev) + PG (prod) | 开发无配置 + 生产可靠 |
+| **DB** | SQLite 文件 (dev) + 远端 libSQL (prod)；PG 待定 | 开发无配置 + 线上零重写（见第 5 节，PG 推迟） |
 | **ORM** | Prisma | 统一接口、自动迁移、类型安全 |
 | **部署** | Vercel | 零运维、官方推荐、成本低 |
 
@@ -232,3 +232,29 @@ Day 2 落地时发现，Prisma 7 与培训数据里的 Prisma 6 有大量破坏�
 - Day 3 接 NextAuth 时注意同样的问题：`PrismaAdapter(...)` 不要写在模块顶层。
 
 **连接串的两种形态**：本地 `file:./dev.db`；线上远端 libSQL（Turso）为 `libsql://...` + `DATABASE_AUTH_TOKEN`。两者共用 `@prisma/adapter-libsql`，schema provider 和已有迁移都不用动，这是当前最省的上线路径。
+
+---
+
+## 5. 线上先接远端 libSQL（Turso），暂不上 PostgreSQL（2026-10-14）
+
+### 背景
+
+第 2 节的计划是"上线时切 PostgreSQL"。B1 落地前实测发现两件事，让这个计划需要重新排期：
+
+1. **Prisma CLI 连不上远端 libSQL**：`datasource.url` 只认引擎内置 scheme，传 `libsql://` 直接报 `P1013: The scheme is not recognized in database URL`；`@prisma/config` 的 `PrismaConfig` 没有 `adapter` 字段，`migrate deploy` 也没有 `--adapter` 参数，所以没法让 CLI 走 driver adapter。
+2. **切 PostgreSQL 的成本集中在迁移史**：现有 `prisma/migrations/` 是 SQLite 方言（`migration_lock.toml` 也写着 `provider = "sqlite"`），必须用 `migrate diff` 重做 baseline；而且按第 2 节的原则，切了 PG 之后本地开发也得指向同一个引擎，否则长期维护两套迁移历史。
+
+### 决策
+
+线上先用 **Turso（远端 libSQL）**，本地继续用 SQLite 文件；PostgreSQL 推迟到真正需要时再切。
+
+### 理由
+
+- **零重写**：schema 的 `provider = "sqlite"` 不变，`@prisma/adapter-libsql` 不变，已有的 SQLite 方言迁移 SQL 可以直接套到 Turso（Turso 就是 SQLite）。运行时只是把 `{ url }` 换成 `{ url, authToken }`。
+- **迁移史只有一套**：本地 `prisma migrate dev` 写出的迁移，用 `npm run db:migrate:remote` 原样应用到远端，不需要为线上单独维护一份 baseline。
+- **Day 3 / Day 4 的成果能在 Vercel 预览环境真跑**：认证会话落库、书签读写都能在部署后立刻验证，而不是把风险堆到 Day 5。
+
+### 代价与遗留
+
+- **远端迁移不走 Prisma CLI**：`scripts/migrate-remote.mjs` 用 `@libsql/client` 执行 `prisma/migrations/*/migration.sql`，已应用记录写在 `_applied_migrations` 表（自建，与 Prisma 的 `_prisma_migrations` 无关，因为 CLI 不会碰这个库）。脚本对同一迁移的 checksum 做了校验，改动过的迁移会被拒绝执行。
+- **并发 / 事务能力弱于 PostgreSQL**：书签管理器的 MVP 阶段够用；一旦需要复杂事务、并发写入或全文检索，再按第 2 节的方式切 PG（届时 `migration_lock.toml` 与迁移史需要整体重做一次）。
