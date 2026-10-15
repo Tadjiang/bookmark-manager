@@ -190,6 +190,10 @@ Free Plan       → Pro Plan        → 按需付费
 
 这些决策优先考虑 **MVP 阶段的快速迭代**，后续可根据业务增长灵活调整。
 
+> 阅读提示：本节的"DB"一行是**最初立项时**的计划。线上数据库实际已改为 Turso（远端 libSQL），
+> PostgreSQL 推迟——见第 5 节；第 2 节仍保留当时的 PostgreSQL 论证，作为切换时的参考，**当前不生效**。
+> 验证手段与脚本相关的新决策见第 6、7 节。
+
 ---
 
 ## 4. Prisma 7 的实际形态（2026-10-14 补充）
@@ -258,3 +262,63 @@ Day 2 落地时发现，Prisma 7 与培训数据里的 Prisma 6 有大量破坏�
 
 - **远端迁移不走 Prisma CLI**：`scripts/migrate-remote.mjs` 用 `@libsql/client` 执行 `prisma/migrations/*/migration.sql`，已应用记录写在 `_applied_migrations` 表（自建，与 Prisma 的 `_prisma_migrations` 无关，因为 CLI 不会碰这个库）。脚本对同一迁移的 checksum 做了校验，改动过的迁移会被拒绝执行。
 - **并发 / 事务能力弱于 PostgreSQL**：书签管理器的 MVP 阶段够用；一旦需要复杂事务、并发写入或全文检索，再按第 2 节的方式切 PG（届时 `migration_lock.toml` 与迁移史需要整体重做一次）。
+
+---
+
+## 6. 验证手段的取舍：探针脚本 + 受限会话的替代路径（2026-10-15）
+
+### 背景
+
+2026-10-15 复查 Day 1 / Day 2 时发现两件事：一是 `/api/health` 一直被当作"端到端验证"，但它其实只做 `count()`；二是当时所在的受限沙箱既不能构建、也不能起服务、还不能写 `dev.db`。需要一个不依赖"能起服务"的验证方案。
+
+### 决策
+
+**1）把"能写入"独立成一条必须单独验证的结论。**
+
+`/api/health` 返回 `ok:true` **只能证明读链路**：数据库处于只读状态（`SQLITE_READONLY`）时 `count()` 依然成功，接口照样返回 200。因此新增 `scripts/verify-day2-probe.mjs`，覆盖：
+
+- 表结构存在性（缺表直接失败，并指出是迁移问题）；
+- 写入：user + tag + bookmark（含关联）；
+- 读回关联（`Bookmark ↔ Tag`、`Bookmark → User`）；
+- 按 title/url 的 `contains` 搜索（Day 4 搜索功能的前置验证）；
+- 删除父记录后的**级联**（`onDelete: Cascade`）；
+- 行数复原（证明脚本可重复跑、不留垃圾数据）。
+
+**2）验证层次固定为四层**，每层用最便宜的手段：HTTP 探活 → `prisma validate` / `migrate status` → 只读查表 → 写入探针。已写进 [README](./README.md) 的「自己验证数据库链路」。
+
+**3）受限会话里的替代路径**：不能在沙箱内跑 `next dev` / `next build` / `prisma migrate status` 时，改用
+`npm run lint`、`npx prisma validate`、`node scripts/verify-day2-probe.mjs`、`curl` 打已在跑的 dev server 来覆盖结论，
+而不是反复重试必然会 `spawn EPERM` 的命令。细节见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #2。
+
+### 代价与遗留
+
+- 探针脚本需要 `scripts/prisma-esm-hook.mjs` 才能在纯 Node 下加载生成的客户端（见第 7 节），多了一个小文件。
+- 探针**不**覆盖 UI 层。Day 3 之后的认证流程仍需要在浏览器里手点一遍。
+
+---
+
+## 7. 纯 Node 下加载 Prisma 生成客户端需要 loader（2026-10-15）
+
+### 背景
+
+写验证脚本时想直接 `import` 生成的客户端，报：
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '...\app\generated\prisma\enums'
+imported from ...\app\generated\prisma\client.ts
+```
+
+### 决策
+
+`prisma-client` 生成的是**打包器风格的无扩展名相对导入**（`./enums`、`./internal/class`），是给 Next.js / Turbopack
+用的；Node 的 ESM 解析器要求显式扩展名。因此仓库内提供 `scripts/prisma-esm-hook.mjs`，用 `module.register()`
+把这类裸相对导入补成 `.ts`，配合 Node ≥ 22.6 的类型擦除即可在纯 Node 下跑真实 Prisma Client。
+
+### 代价与遗留
+
+- 只用于**仓库脚本**。Next.js 应用本身不需要，也不要为此改 `tsconfig` 或 `package.json` 的 `module`/`type`。
+- 项目 `package.json` 没有 `"type": "module"`，import `.ts` 时 Node 会打印 `MODULE_TYPELESS_PACKAGE_JSON` 警告；
+  这是噪音，**不要**为了消警告去加 `"type": "module"`（会影响 Next.js 的模块判定）。
+- 顺带记录一个上游缺口：Prisma 7.10.0 的 `prisma studio` 用 `split("://")` 判断协议，导致 `file:./dev.db`
+  被误判为不支持的协议；绕过写法是 `--url "file:///绝对路径/dev.db"`。见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #3，待上游修复后可去掉这个绕法。
+
