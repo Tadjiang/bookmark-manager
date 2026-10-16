@@ -427,3 +427,74 @@ export default function DashboardPage() {          // 同步：构建期就能�
   因此把这条约束同时写进了 [AGENTS.md](./AGENTS.md)、[docs/ISSUES.md](./docs/ISSUES.md) 的 #7
   与 README 的常见问题表。
 
+---
+
+## 10. 书签 CRUD 的形态：Server Actions + 数据访问层（2026-10-16）
+
+### 背景
+
+[TASKS.md](./TASKS.md) 原文把 Day 4 写成"5 个 REST 路由"，而 [docs/DAY4-PLAN.md](./docs/DAY4-PLAN.md)
+列出了两种做法的取舍。开工前需要先定：写操作走 Server Actions 还是 Route Handlers。
+
+### 决策
+
+**1）写操作走 Server Actions；列表与搜索走 Server Component 里的直接查询（方案 A）。**
+
+不实现 `/api/bookmarks` 那 5 个路由。理由：这是"本站 UI 驱动"的 CRUD，没有外部消费者；
+Server Action 省掉手写 fetch/JSON/错误映射三件套，并且变更后能在同一次往返里把新的 RSC payload
+一起返回。代价是对外没有 REST 接口——将来做浏览器扩展/移动端时需要补，
+但那时接口形态应该按真实消费者设计，而不是现在先猜一个。
+
+> 相应地，TASKS.md 的 Day 4 条目已从"5 个 API 路由"改写为"Server Actions + 查询"，
+> 避免文档与实现长期不一致。
+
+**2）变更后用 `refresh()` 刷新，不引入 `cacheTag` / `updateTag`。**
+
+列表是**动态读**（每次请求都查库），没有任何缓存条目需要失效；`refresh()` 只重跑当前路由的
+动态部分，语义正好。将来若给列表加 `"use cache"` 加速，再改成 `cacheTag` + `updateTag`
+的组合——注意 `updateTag` **只能在 Server Action 里调用**，Route Handler 里要用
+`revalidateTag(tag, { expire: 0 })`。
+
+**3）标签名统一转小写后入库。**
+
+`Tag` 的唯一约束是 `@@unique([userId, name])`，而 SQLite 的字符串比较**区分大小写**：
+不归一化的话 `Work` 与 `work` 会各插一行，界面上出现两个看起来一样的标签。
+Prisma 的 `mode: "insensitive"` 在 SQLite 上不可用，所以归一化只能放在写入前
+（`lib/bookmark-input.ts` 的 `normalizeTagName`），筛选 `?tag=` 也走同一个函数，两边才对称。
+代价是英文标签显示为小写，MVP 阶段接受。
+
+**4）搜索与筛选放数据库层，并用 `MAX_BOOKMARKS = 200` 收口。**
+
+关键词用 `OR: [{ title: { contains } }, { url: { contains } }]`，标签用 `tags: { some: { name } }`，
+两者处于同一个 `where` 里天然是 AND。不在内存里过滤，否则加分页就崩。
+SQLite 的 `LIKE` 对 ASCII 大小写不敏感（中文本来也没有大小写问题），因此不需要额外 `lower()`。
+本日不做分页，先多取一条判断"是否还有更多"，超出时在 UI 顶部提示。
+
+**5）越权防护收敛在数据访问层（`lib/bookmarks.ts`），而不是散在各组件里。**
+
+每个导出函数第一件事就是取会话、拿 `userId`，**绝不接受调用方传入 `userId`**；
+`getBookmark` 用 `findFirst({ where: { id, userId } })`，`deleteBookmark` 用
+`deleteMany({ where: { id, userId } })`；`updateBookmark` 因为 Prisma 的 `update` 只接受唯一键，
+先按 `(id, userId)` 确认归属再按 id 更新。报错文案刻意不区分"不存在"和"不属于你"，避免被用来探测。
+
+这条纪律由探针 + 静态护栏双重看守（见 [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 3 节）：
+数据库探针验证"带 userId 的条件真的拦得住"，静态护栏验证"DAL 里每处真的都带了"。
+
+**6）`isRedirectError` 抽成 `lib/redirect-error.ts` 共用。**
+
+Next.js 的 `redirect()` 靠抛异常中断渲染。Server Action 里用 try/catch 包业务逻辑时，
+一旦把 NEXT_REDIRECT 当成业务错误吞掉，"未登录 → 跳登录页"就会显示成"保存失败"。
+Day 3 的登录流程踩过同一个点，这里抽出来给两个 actions 模块共用（`"use server"` 文件
+只能导出 async 函数，所以这个 helper 不能留在原文件里）。
+
+### 代价与遗留
+
+- **没有 REST 接口**，外部客户端将来要另外补，并重新设计鉴权与错误格式。
+- **没有限流**：新增书签与注册都没有速率限制，公网开放前必须补（Day 5 之前）。
+- **没有分页**：靠 `MAX_BOOKMARKS` 收口，正式分页排到 P1。
+- **标签只做了去重与上限**（30 字符 / 10 个），没有层级、没有自动补全；输入形态是逗号分隔文本框，
+  将来换成多选组件时数据结构不用动。
+- **`verify-bookmarks-probe.mjs` 没有 import 数据访问层**（DAL 依赖 `@/auth` 与 `next/navigation`，
+  纯 Node 加载不了），只验证了相同查询形状的行为；DAL 自身靠静态护栏守。详见 Day 4 验证文档第 3 节。
+
+

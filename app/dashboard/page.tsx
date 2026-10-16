@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import Image from "next/image";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { SignOutButton } from "@/app/auth-forms";
+import {
+  BookmarkList,
+  type DashboardSearchParams,
+} from "@/app/dashboard/bookmark-list";
 import { auth } from "@/auth";
 import { getPrisma } from "@/lib/prisma";
 
@@ -16,17 +19,19 @@ export const metadata: Metadata = {
 // Next 16 已移除 dynamic/revalidate/fetchCache 这类段配置，写了会直接编译失败（整条路由 500）。
 //
 // cacheComponents 下正确的写法是"静态外壳 + 把请求期数据下沉到 <Suspense>"：
-// auth() 读会话 cookie、Prisma 查询都是请求期行为，放在页面顶层会让预渲染失败
+// auth() 读会话 cookie、searchParams、Prisma 查询都是请求期行为，放在页面顶层会让预渲染失败
 // （见 node_modules/next/dist/docs 里的 authentication-with-cache-components 指南）。
-export default function DashboardPage() {
+//
+// searchParams 在这里**只传递不 await**（当作 Promise 往下传），await 发生在 Suspense 内部。
+export default function DashboardPage({ searchParams }: { searchParams: DashboardSearchParams }) {
   return (
     <Suspense fallback={<DashboardSkeleton />}>
-      <DashboardContent />
+      <DashboardContent searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function DashboardContent() {
+async function DashboardContent({ searchParams }: { searchParams: DashboardSearchParams }) {
   const session = await auth();
 
   // proxy 已经拦过一次；这里再判一次是为了类型收窄
@@ -35,16 +40,13 @@ async function DashboardContent() {
     redirect("/signin");
   }
 
-  const prisma = getPrisma();
-  const user = await prisma.user.findUnique({
+  const user = await getPrisma().user.findUnique({
     where: { id: session.user.id },
     select: {
       name: true,
       email: true,
       image: true,
-      passwordHash: true,
-      createdAt: true,
-      _count: { select: { bookmarks: true, tags: true } },
+      _count: { select: { bookmarks: true } },
     },
   });
 
@@ -54,7 +56,7 @@ async function DashboardContent() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-16">
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-6 py-12">
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           {user.image ? (
@@ -72,48 +74,20 @@ async function DashboardContent() {
           )}
           <div>
             <p className="font-medium">{user.name ?? "未命名用户"}</p>
-            <p className="text-sm text-black/60 dark:text-white/60">{user.email}</p>
+            <p className="text-sm text-black/60 dark:text-white/60">
+              {user.email} · 共 {user._count.bookmarks} 条书签
+            </p>
           </div>
         </div>
 
         <SignOutButton />
       </header>
 
-      <section className="rounded-xl border border-black/[.08] p-5 dark:border-white/[.12]">
-        <h2 className="font-medium">账号状态</h2>
-        <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-          <div>
-            <dt className="text-black/60 dark:text-white/60">登录方式</dt>
-            <dd>{user.passwordHash ? "邮箱密码" : "GitHub OAuth"}</dd>
-          </div>
-          <div>
-            <dt className="text-black/60 dark:text-white/60">注册时间</dt>
-            <dd>{user.createdAt.toLocaleString("zh-CN")}</dd>
-          </div>
-          <div>
-            <dt className="text-black/60 dark:text-white/60">书签数</dt>
-            <dd>{user._count.bookmarks}</dd>
-          </div>
-          <div>
-            <dt className="text-black/60 dark:text-white/60">标签数</dt>
-            <dd>{user._count.tags}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section className="rounded-xl border border-dashed border-black/[.12] p-5 text-sm text-black/60 dark:border-white/[.18] dark:text-white/60">
-        <h2 className="font-medium text-black dark:text-white">书签列表（Day 4）</h2>
-        <p className="mt-2">
-          增删改查与搜索将在 Day 4 接入这里。当前页面已经验证了受保护路由与登录态能
-          正常工作。
-        </p>
-      </section>
-
-      <p className="text-sm">
-        <Link href="/" className="text-black/60 underline dark:text-white/60">
-          返回首页
-        </Link>
-      </p>
+      {/* 列表才是真正读请求期数据（searchParams + 查库）的部分，单独再套一层 Suspense：
+          账号信息先出来，列表随后流式补上，不必整页等到查库结束。 */}
+      <Suspense fallback={<BookmarkListSkeleton />}>
+        <BookmarkList searchParams={searchParams} />
+      </Suspense>
     </main>
   );
 }
@@ -123,36 +97,54 @@ function DashboardSkeleton() {
   const block = "rounded bg-black/[.06] dark:bg-white/[.08]";
 
   return (
-    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-6 py-16">
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-6 py-12">
       <header className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className={`h-10 w-10 rounded-full ${block}`} />
           <div className="flex flex-col gap-2">
             <div className={`h-4 w-28 ${block}`} />
-            <div className={`h-3 w-40 ${block}`} />
+            <div className={`h-3 w-44 ${block}`} />
           </div>
         </div>
         <div className={`h-8 w-20 rounded-lg ${block}`} />
       </header>
 
-      <section className="rounded-xl border border-black/[.08] p-5 dark:border-white/[.12]">
-        <div className={`h-4 w-20 ${block}`} />
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          {[0, 1, 2, 3].map((index) => (
-            <div key={index} className="flex flex-col gap-2">
-              <div className={`h-3 w-16 ${block}`} />
-              <div className={`h-4 w-24 ${block}`} />
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-dashed border-black/[.12] p-5 dark:border-white/[.18]">
-        <div className={`h-4 w-32 ${block}`} />
-        <div className={`mt-3 h-3 w-full ${block}`} />
-      </section>
+      <BookmarkListSkeleton />
 
       <p className="text-sm text-black/40 dark:text-white/40">正在读取账号信息…</p>
     </main>
+  );
+}
+
+/** 表单 + 搜索栏 + 若干卡片，与 BookmarkList 的实际布局同构。 */
+function BookmarkListSkeleton() {
+  const block = "rounded bg-black/[.06] dark:bg-white/[.08]";
+
+  return (
+    <div className="flex flex-col gap-6">
+      <section className="rounded-xl border border-black/[.08] p-5 dark:border-white/[.12]">
+        <div className={`h-4 w-20 ${block}`} />
+        <div className="mt-4 flex flex-col gap-3">
+          <div className={`h-9 w-full ${block}`} />
+          <div className={`h-9 w-full ${block}`} />
+          <div className={`h-16 w-full ${block}`} />
+        </div>
+      </section>
+
+      <div className={`h-9 w-full ${block}`} />
+
+      <div className="flex flex-col gap-3">
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className="rounded-xl border border-black/[.08] p-4 dark:border-white/[.12]"
+          >
+            <div className={`h-4 w-2/3 ${block}`} />
+            <div className={`mt-3 h-3 w-full ${block}`} />
+            <div className={`mt-2 h-3 w-1/2 ${block}`} />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

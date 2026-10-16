@@ -129,6 +129,25 @@ node scripts/verify-auth-session.mjs
 
 每条命令的详细说明、预期输出与排错对照表见 [docs/DAY3-VERIFICATION.md](./docs/DAY3-VERIFICATION.md)。
 
+## 自己验证书签 CRUD
+
+改动书签相关代码后按顺序跑这两条（第一条不需要数据库，第二条需要可写库，跑之前先停 dev server）：
+
+```bash
+# 1. 输入校验 + 标签归一化 + 数据访问层的静态护栏（不碰数据库）
+node scripts/verify-bookmark-input.mjs
+# 预期: 48 项 PASS + RESULT_OK
+
+# 2. 越权 / 标签幂等 / 搜索 / 筛选 AND / 关联清理（会写库，跑完自动清干净）
+node scripts/verify-bookmarks-probe.mjs
+# 预期: 23 项 PASS + RESULT_OK，且 BASELINE 与 FINAL 的行数一致
+```
+
+第 2 条**没有 import 数据访问层本身**（`lib/bookmarks.ts` 依赖 `@/auth` 与 `next/navigation`，
+纯 Node 下加载不了），它验的是"带 `userId` 的查询条件真的拦得住"；
+"DAL 里每处真的都带了 `userId`"由第 1 条的静态护栏来守。两者的分工与**覆盖边界**写在
+[docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 3 节，手测清单在第 4 节。
+
 ## 常见问题
 
 | 现象 | 原因 / 处理 |
@@ -138,7 +157,9 @@ node scripts/verify-auth-session.mjs
 | 构建报 `Both middleware file ... and proxy file ... are detected` | Next 16 已把 `middleware` 改名 `proxy`，删掉 `middleware.ts`，见 [ISSUES](./docs/ISSUES.md) 的 #8 |
 | 构建报 `failed to create junction point ... os error 5` | 打开 Windows「开发者模式」，或用管理员终端构建，见 [ISSUES](./docs/ISSUES.md) 的 #9 |
 | `next build` 报 `EPERM ... .next\trace` 或 `os error 5` | `.next` 的属主不在你名下。管理员窗口执行 `takeown /F ".next" /R /D Y` + `icacls ".next" /grant "%USERNAME%:(OI)(CI)F" /T /C`，见 [ISSUES](./docs/ISSUES.md) 的 #1 |
-| Prisma 写入报 `SQLITE_READONLY` | 同上，`dev.db` 属主/权限问题；或文件被别的进程锁着 |
+| Prisma 写入报 `SQLITE_READONLY` | 先看 `dev.db` 有没有 `Low` 完整性标记（受限进程是低完整性级别时写不了无标记对象），见 [ISSUES](./docs/ISSUES.md) 的 #11；属主不在你名下则见 #1；也可能只是文件被别的进程锁着 |
+| `Access to the path ... is denied`，但 `icacls` 看权限明明是够的 | 进程完整性级别与对象标记不匹配（MIC 在 DACL 之后判定，`icacls` 列不出来），见 [ISSUES](./docs/ISSUES.md) 的 #11 |
+| `git add` 报 `.git/index.lock: Permission denied` | 同上：缺 `.git/` 目录的完整性标记，见 [ISSUES](./docs/ISSUES.md) 的 #11 |
 | `spawn EPERM`（`next dev` / `prisma migrate status`） | 受限沙箱禁止 `fork`/管道子进程，在普通终端里跑，见 [ISSUES](./docs/ISSUES.md) 的 #2、#10 |
 | 纯 Node 里 import 生成的客户端报 `ERR_MODULE_NOT_FOUND: .../enums` | 生成代码用无扩展名相对导入，需注册 `scripts/prisma-esm-hook.mjs`，见 [ISSUES](./docs/ISSUES.md) 的 #4 |
 | 登录后跳到了外部站点 / 想确认跳转是否安全 | 站内跳转由 `lib/safe-redirect.ts` 白名单控制，护栏探针里有回归断言 |
@@ -180,15 +201,26 @@ auth.ts                   Auth.js 配置（GitHub + Credentials、JWT 会话、�
 proxy.ts                  受保护路由（Next 16 的 proxy，替代已弃用的 middleware）
 app/
   actions/auth.ts         登录 / GitHub 登录 / 注册 / 登出 四个 Server Action
+  actions/bookmarks.ts    书签 创建 / 更新 / 删除 三个 Server Action（写完调 refresh()）
   auth-forms.tsx          客户端表单（useActionState 展示错误）
   api/auth/[...nextauth]/ Auth.js 路由处理器
   api/health/route.ts     数据库连通性自检接口
   signin/ register/       登录页 / 注册页（静态外壳 + Suspense 结构）
-  dashboard/page.tsx      受保护页面
+  dashboard/page.tsx      受保护页面（外壳 + 两层 Suspense）
+  dashboard/bookmark-list.tsx          列表（await searchParams + 查库）
+  dashboard/bookmark-item.tsx          单条展示（服务端组件）
+  dashboard/bookmark-form.tsx          新增/编辑共用的表单
+  dashboard/bookmark-item-actions.tsx  编辑展开 / 删除入口
+  dashboard/delete-button.tsx          删除二次确认
+  dashboard/search-bar.tsx             搜索（300ms 防抖）+ 标签筛选
+  dashboard/form-ui.tsx                表单共用样式与错误组件
   generated/prisma/       Prisma 生成的客户端（.gitignore 排除，不入库）
   layout.tsx / page.tsx / globals.css
 lib/
   prisma.ts               惰性初始化的 PrismaClient（必须用 getPrisma()）
+  bookmarks.ts            书签数据访问层（每个函数第一件事就是取会话）
+  bookmark-input.ts       输入校验与标签归一化（纯函数，可脱离数据库测）
+  redirect-error.ts       识别 NEXT_REDIRECT，避免被 catch 吞掉
   password.ts             scrypt 密码哈希（零依赖）
   credentials.ts          邮箱归一化 + 密码校验
   auth-config.ts          GitHub 是否启用的判定
@@ -207,8 +239,10 @@ scripts/
   verify-auth-adapter.mjs Prisma adapter 契约自检
   verify-auth-probe.mjs   邮箱+密码链路自检
   verify-auth-session.mjs HTTP 端到端会话链路自检
+  verify-bookmark-input.mjs    书签输入校验 / 标签归一化 / 静态护栏自检
+  verify-bookmarks-probe.mjs   书签越权 / 搜索 / 筛选 / 关联清理自检
 prisma7.config.ts         Prisma 7 配置（schema / migrations / datasource.url）
-docs/                     问题库、会话记录、Day 3 验证文档
+docs/                     问题库、会话记录、Day 3 / Day 4 验证文档
 ```
 
 ## Deploy on Vercel

@@ -1,8 +1,13 @@
 # Day 4 规划：书签 CRUD
 
-> 2026-10-15 起草。本文档只做**规划**，代码尚未开工。
+> 2026-10-15 起草。本文档是**规划**，保留当时的取舍过程。
 > 目标来自 [TASKS.md](../TASKS.md) 的 Day 4 清单；约束来自 [DECISIONS.md](../DECISIONS.md) 第 8、9 节
 > 与 [docs/ISSUES.md](./ISSUES.md) 的 #7。
+>
+> **状态（2026-10-16）**：已按第 8 节的三个决定落地——接口形态取**方案 A**（Server Actions + 查询）、
+> 搜索范围为**标题 + URL**、标签用**逗号分隔文本框**。实际实现与验证结果见
+> [DAY4-VERIFICATION.md](./DAY4-VERIFICATION.md)，决策记录见 [DECISIONS.md](../DECISIONS.md) 第 10 节。
+> 下文中"需要你拍板"的部分是历史记录，不必再回答。
 
 ## 0. 目标与验收标准
 

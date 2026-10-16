@@ -420,3 +420,84 @@ await startServer({ dir: process.cwd(), port: 3100, isDev: true, hostname: "127.
 
 配合 `spawn(..., { stdio: "inherit" })` 启动即可；但**仍需**解除端口监听限制，否则报 `EACCES`。
 
+---
+
+## #11 工作区"部分目录/文件写不进去"：缺了低完整性级别标记（2026-10-16）
+
+**现象**
+
+同一个会话里，写入能力看起来毫无规律：
+
+| 能写 | 写不了 |
+| --- | --- |
+| 仓库根目录、`docs/`、`.next/`、`types/`、`README.md` | `app/` 的部分文件、`lib/`、`scripts/`、`prisma/`、`public/`、`.git/`、`dev.db` |
+
+报错还各不相同，很容易被分别误判成三个不相关的问题：
+
+- PowerShell `Set-Content` → `Access to the path '...' is denied.`
+- `git add` → `fatal: Unable to create '.../.git/index.lock': Permission denied`
+- Prisma / 探针 → `SQLITE_READONLY: attempt to write a readonly database`
+
+而 `icacls` / `Get-Acl` 看 DACL 明明有 `NT AUTHORITY\Authenticated Users:(M)`，
+有些对象甚至有 `Rebirth\Tadjiang:(F)`——按"权限"算完全应该能写。
+
+**根因**
+
+两件事叠在一起，而且**都不体现在 DACL 里**：
+
+1. **令牌是低完整性级别（Low Integrity）**。`whoami /all` 显示
+   `Mandatory Label\Low Mandatory Level  S-1-16-4096`。Windows 的强制完整性控制（MIC）
+   会挡住低完整性进程对"未标记对象"（按中完整性处理）的写入。关键点是：**MIC 在 DACL 检查之后才判**，
+   而且它不作为访问项出现在 `icacls` 列表里，所以只看 DACL 一定会得出"权限没问题"的错误结论。
+2. **缺标记的对象恰好就是那批写不了的**。工作区根目录上有
+   `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`（本意就是递归下传给整个工作区），
+   `docs`/`.next`/`types` 继承到了，而 `app`/`lib`/`scripts`/`prisma`/`public`/`.git`/`dev.db`
+   没继承到（它们的 SACL 是冻结的，父目录后来加的标记没有传下去）。
+
+**怎么快速判断**
+
+```powershell
+whoami /all | Select-String 'Mandatory Label'      # 进程是不是 Low？
+foreach ($p in @('.','app','lib','scripts','.git','dev.db')) {
+  $o = icacls $p 2>&1 | Select-String 'Mandatory Label'
+  "{0,-10} {1}" -f $p, (($o -join ';').Trim())     # 对象有没有 Low 标记？
+}
+```
+
+两边一对比：**进程是 Low、对象却无标记 → 就是这个坑**。
+
+> ⚠️ 不要被 `Everyone:(DENY)(DC)`、`S-1-4-*:(W,D,DC)`、`CodexSandboxUsers` 这些条目带偏——
+> 那些是沙箱/历史会话自己加的，属正常，**不要删**。
+
+**解法**
+
+给缺标记的对象补上和工作区根目录一致的标记。这一步要写对象的完整性标记，受限令牌自己做不了，
+需要一次更高权限的执行（提权窗口，或一次性授权）：
+
+```powershell
+icacls <目录> /setintegritylevel "(OI)(CI)Low" /T /C   # 目录：带继承，下传给子项
+icacls <文件> /setintegritylevel Low                    # 单个文件（如 dev.db）
+```
+
+还原：对同一对象执行 `icacls <对象> /setintegritylevel Medium`。
+
+2026-10-16 那次实际补过标记的对象：`app`、`public`、`.git`（及其内部文件）、`dev.db`、
+`.env`、`.env.example`、`.gitignore`。**未改动**任何文件内容、属主或访问权限项。
+
+**还有一个"看起来像权限、其实是属主"的分支**
+
+`lib`、`scripts`、`prisma` 三个目录的**属主是外来账号 `Rebirth\CodexSandboxOffline`**，
+当前用户既没有改它们权限、也没有改它们标记的权利，连上面那条 `icacls` 都会被拒
+（`Access is denied.`）。这种情况只能走 #1 的管理员 `takeown` 路径，或者把会话切到「完全权限」。
+
+> 别把两件事混起来：**「完全权限」解决的是"进程不再是低完整性"**，
+> 于是 DACL 里本来就有写权限的对象（`Authenticated Users:(M)`）就能写了；
+> 它**并不等于**拿回了对象的属主权限——改 ACL 依然会被拒。
+
+**顺带一条同样容易被误判的**
+
+写入失败时要先看**父目录**。`.git/index.lock` 写不了，卡住的是 `.git/` 这个目录本身；
+`dev.db` 报 `SQLITE_READONLY` 时，SQLite 还需要在同目录建 `-journal`/`-wal`，
+所以目录能不能写同样关键。
+
+

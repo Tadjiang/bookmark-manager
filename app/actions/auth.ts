@@ -13,21 +13,10 @@ import { redirect } from "next/navigation";
 import { signIn, signOut } from "@/auth";
 import { hashPassword } from "@/lib/password";
 import { getPrisma } from "@/lib/prisma";
+import { isRedirectError } from "@/lib/redirect-error";
 import { safeCallbackUrl } from "@/lib/safe-redirect";
 
 export type AuthFormState = { error?: string } | undefined;
-
-// Next.js 的 redirect()/notFound() 通过抛出一个带 digest 的异常来中断渲染。
-// 这里只认 NEXT_REDIRECT；其余异常才当业务错误处理。
-function isRedirectError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-
-  const digest = (error as { digest?: unknown }).digest;
-
-  return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT");
-}
 
 function readCredentials(formData: FormData) {
   const email = String(formData.get("email") ?? "")

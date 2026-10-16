@@ -5,6 +5,107 @@
 
 ---
 
+## 2026-10-16（第三轮）· 实现 Day 4 书签 CRUD，并修掉工作区写入权限问题
+
+**会话目标**：按 [TASKS.md](../TASKS.md) 的 Day 4 清单落地书签 CRUD（新增/列表/搜索/编辑/删除），
+并用探针覆盖越权、标签归一化、搜索、级联清理等"UI 手测很难覆盖"的点。
+
+**用户决策（开工前拍板）**
+
+| # | 问题 | 决定 |
+| --- | --- | --- |
+| 1 | 接口形态 | **A：Server Actions + Server Component 查询**（不做 5 个 REST 路由） |
+| 2 | 搜索范围 | **标题 + URL**（描述与标签名不参与关键词） |
+| 3 | 标签输入 | **逗号分隔文本框**（服务端归一化 + upsert） |
+| 4 | Day 3 未提交的改动 | **先提交再开 Day 4**（已提交 `64a3878`） |
+
+### 先处理环境：工作区写入权限（[ISSUES #11](./ISSUES.md)）
+
+开工第一步就卡住：`git add` 报 `.git/index.lock: Permission denied`，`app/` 的部分文件、
+`lib/`、`scripts/`、`prisma/`、`public/`、`dev.db` 全部写不进去，但 `docs/`、根目录却正常。
+
+排查结论（详见 ISSUES #11）：**令牌是低完整性级别，而这些对象缺少工作区其他部分都有的
+"低完整性级别"标记**；MIC 在 DACL 之后判定、又不出现在 `icacls` 的访问项里，
+所以只看权限列表会误判成"权限没问题"。
+
+处理过程：
+
+1. 先用技能自带的诊断脚本（备份 → 加当前用户完整控制 → 复验）跑了 `app`，**受限写入仍然失败**——
+   因为真正缺的不是 DACL 项；
+2. 对比 `whoami /all`（Low）与各目录的标记，定位到完整性标记缺失；
+3. 分几次补标记：`app`、`public`、`.git`（含内部文件）、`dev.db`、`.env` 等；
+4. `lib`、`scripts`、`prisma` 的属主是外来账号 `Rebirth\CodexSandboxOffline`，改不动；
+   用户选择把会话切到「完全权限」，之后 `lib/`、`scripts/` 的写入即恢复正常。
+
+> 教训已写进 ISSUES #11：**"看起来像权限问题"要先看进程完整性级别和对象标记，再看属主，最后才看 DACL。**
+
+### 主要交付
+
+**代码**
+
+- `lib/bookmark-input.ts`：纯函数校验（URL 协议白名单 / 长度上限 / 标签归一化与去重）
+- `lib/bookmarks.ts`：数据访问层，**每个导出函数第一件事就是取会话**，处处强制 `userId`
+- `lib/redirect-error.ts`：`isRedirectError` 抽出来共用（`"use server"` 文件只能导出 async 函数）
+- `app/actions/bookmarks.ts`：创建 / 更新 / 删除三个 Server Action，写完调 `refresh()`
+- `app/dashboard/`：`page.tsx`（外壳 + 两层 Suspense）、`bookmark-list.tsx`、`bookmark-item.tsx`、
+  `bookmark-form.tsx`（新增与编辑共用）、`bookmark-item-actions.tsx`、`delete-button.tsx`、
+  `search-bar.tsx`（300ms 防抖 + 标签筛选）、`form-ui.tsx`
+
+**探针**
+
+- `scripts/verify-bookmark-input.mjs`：48 项断言（纯函数 + 数据访问层/页面的静态护栏）
+- `scripts/verify-bookmarks-probe.mjs`：23 项断言（越权 / 标签幂等 / 搜索 / 筛选 AND /
+  关联清理 / 数据自清理）
+
+**文档**
+
+- 新增 [DAY4-VERIFICATION.md](./DAY4-VERIFICATION.md)（验证结果、探针覆盖边界、浏览器手测清单、排错对照表）
+- [DECISIONS.md](../DECISIONS.md) 新增第 10 节（Server Actions 选型、标签小写归一化、`refresh()`、
+  搜索层级、越权防护纪律）
+- [ISSUES.md](./ISSUES.md) 新增 #11
+- [TASKS.md](../TASKS.md) 的 Day 4 条目按方案 A 改写并标记完成
+
+### 验证结果
+
+| 验证项 | 结果 |
+| --- | --- |
+| `npm run lint` | ✅ exit 0 |
+| `npx tsc --noEmit` | ✅ exit 0 |
+| `node scripts/verify-bookmark-input.mjs` | ✅ `RESULT_OK`（48 项） |
+| `node scripts/verify-bookmarks-probe.mjs` | ✅ `RESULT_OK`（23 项，`BASELINE == FINAL`） |
+| Day 2 回归 `verify-day2-probe.mjs` | ✅ `RESULT_OK` |
+| Day 3 回归 `verify-auth-guards.mjs` / `verify-auth-adapter.mjs` | ✅ `RESULT_OK` |
+| `npm run build` | ❌ Turbopack 建不了 junction（[ISSUES #9](./ISSUES.md)） |
+
+> 构建这次**不再是** `spawn EPERM`——CLI 真跑起来了、走到了 Turbopack 阶段，
+> 卡在 Windows 的符号链接权限上（需开发者模式或管理员终端）。见 Day 4 验证文档第 2 节。
+
+### 会话内没能完成的事（需要用户）
+
+1. `npm run build`：开 Windows 开发者模式，或用管理员终端跑一次；
+2. `npm run dev` + 浏览器手测 12 条（清单见 [DAY4-VERIFICATION.md](./DAY4-VERIFICATION.md) 第 4 节）；
+3. 可选：在管理员终端把 `lib`、`scripts`、`prisma` 的属主改回自己
+   （`takeown /F <目录> /R /D Y` + `icacls <目录> /grant "%USERNAME%:(OI)(CI)F" /T /C`），
+   以后就不用再依赖「完全权限」。
+
+### 本次新增/修改的文件
+
+```
+新增  lib/bookmark-input.ts          lib/bookmarks.ts            lib/redirect-error.ts
+新增  app/actions/bookmarks.ts
+新增  app/dashboard/bookmark-list.tsx        app/dashboard/bookmark-item.tsx
+新增  app/dashboard/bookmark-item-actions.tsx app/dashboard/bookmark-form.tsx
+新增  app/dashboard/delete-button.tsx        app/dashboard/search-bar.tsx
+新增  app/dashboard/form-ui.tsx
+新增  scripts/verify-bookmark-input.mjs      scripts/verify-bookmarks-probe.mjs
+新增  docs/DAY4-VERIFICATION.md
+修改  app/actions/auth.ts            （isRedirectError 改为从 lib 引入）
+修改  app/dashboard/page.tsx         （占位内容换成真实的书签管理界面）
+修改  TASKS.md  DECISIONS.md  docs/ISSUES.md  docs/SESSION-RECORDS.md
+```
+
+---
+
 ## 2026-10-15（第二轮）· 实现 Day 3 用户认证并完成构建 + 端到端验证
 
 **会话目标**：按 [TASKS.md](../TASKS.md) 的 Day 3 清单集成 Auth.js（NextAuth v5），同时支持 GitHub OAuth

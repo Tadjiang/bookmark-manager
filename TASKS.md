@@ -14,20 +14,20 @@
 ## 功能清单
 
 ### P0 - MVP 核心功能（第一阶段）
-- [ ] 用户认证（登录/注册/登出）
-- [ ] 添加书签（URL + 标题 + 描述 + 分类标签）
-- [ ] 书签列表展示
-- [ ] 搜索书签（按标题/URL）
-- [ ] 删除书签
-- [ ] 基础 UI（响应式设计）
+- [x] 用户认证（登录/注册/登出）（Day 3）
+- [x] 添加书签（URL + 标题 + 描述 + 分类标签）（Day 4）
+- [x] 书签列表展示（Day 4）
+- [x] 搜索书签（按标题/URL）（Day 4）
+- [x] 删除书签（Day 4）
+- [x] 基础 UI（响应式设计）（Day 4）
 
 ### P1 - 功能增强（第二阶段）
-- [ ] 编辑书签
-- [ ] 按分类筛选
+- [x] 编辑书签（Day 4 一并做了：与新增共用同一套表单与校验）
+- [x] 按分类筛选（Day 4 的标签筛选 `?tag=`，可与关键词叠加）
 - [ ] 书签导入（HTML 格式）
 - [ ] 书签导出（HTML 格式）
 - [ ] 暗黑模式切换
-- [ ] 分页 / 无限滚动
+- [ ] 分页 / 无限滚动（当前用 `MAX_BOOKMARKS = 200` 收口）
 
 ### P2 - 高级功能（第三阶段）
 - [ ] 书签收藏夹
@@ -107,23 +107,31 @@
 > 本轮踩到并修掉的 Next 16 硬约束：`cacheComponents` 与 `dynamic` 等段配置互斥
 > （[ISSUES #7](./docs/ISSUES.md)）、`middleware.ts` 已改名 `proxy.ts`（[ISSUES #8](./docs/ISSUES.md)）。
 
-### 📌 Day 4 - 书签 CRUD
-- [ ] API 路由：POST /api/bookmarks（创建）
-- [ ] API 路由：GET /api/bookmarks（列表）
-- [ ] API 路由：GET /api/bookmarks/:id（详情）
-- [ ] API 路由：PUT /api/bookmarks/:id（更新）
-- [ ] API 路由：DELETE /api/bookmarks/:id（删除）
-- [ ] UI：书签表单
-- [ ] UI：书签列表
-- [ ] UI：搜索功能
+### ✅ Day 4 - 书签 CRUD（2026-10-16）
+- [x] 写操作：创建 / 更新 / 删除（Server Actions，`app/actions/bookmarks.ts`）
+- [x] 查询层：列表 / 详情 / 标签（`lib/bookmarks.ts`，处处强制 `userId`）
+- [x] 输入校验与标签归一化（`lib/bookmark-input.ts`）
+- [x] UI：书签表单（新增与编辑共用同一组件）
+- [x] UI：书签列表（空状态区分"没有书签"与"筛选无结果"）
+- [x] UI：搜索（标题/URL，300ms 防抖）+ 标签筛选（可与关键词叠加）
+- [x] UI：删除二次确认 + 行内编辑
+- [x] 基础 UI：响应式、流式加载骨架、字段级与整体错误提示
 
-> Day 4 直接复用 Day 3 的成果：用 `auth()` 拿 `session.user.id` 作为 `userId` 过滤；
-> 页面/接口里同样注意 `cacheComponents` 的约束——读会话与查库都要放在 `<Suspense>` 内
-> （见 [ISSUES #7](./docs/ISSUES.md)）。
+> **接口形态已按 [DECISIONS.md 第 10 节](./DECISIONS.md) 从"5 个 REST 路由"改为
+> 方案 A（Server Actions + Server Component 查询）**，用户拍板；原有的 5 条
+> `/api/bookmarks*` 条目因此删除，不再保留"待补 REST"的错觉。
 >
-> **开工前先看规划：[docs/DAY4-PLAN.md](./docs/DAY4-PLAN.md)** —— 含接口形态取舍（Server Actions vs REST 路由）、
-> 标签输入方案、搜索实现层级、越权防护要点、验证计划，以及需要先拍板的 3 个问题。
-> 注意：若采用规划里的方案 A（Server Actions），需要把上面 5 条"API 路由"改写为"Server Actions + 查询"。
+> 验证（逐条实跑，过程见 [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md)）：
+>
+> | 验证项 | 结果 |
+> | --- | --- |
+> | `eslint` / `tsc --noEmit` | ✅ 0 错误 |
+> | 输入校验 + 标签归一化 + 静态护栏（48 项） | ✅ `RESULT_OK` |
+> | 数据库链路（越权/搜索/筛选/级联，23 项） | ✅ `RESULT_OK`，`BASELINE == FINAL` |
+> | Day 2 / Day 3 回归探针 | ✅ 全部 `RESULT_OK` |
+> | `npm run build` | ❌ Turbopack 建不了 junction（[ISSUES #9](./docs/ISSUES.md)），需开发者模式或管理员终端 |
+>
+> ⏳ 仍待人工：**浏览器手测 12 条**（清单见 [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 4 节）。
 
 ### 🎨 Day 5 - UI 优化 + 部署
 - [ ] 完善样式
@@ -134,12 +142,20 @@
 
 ## 遗留待办
 
-- [ ] **用户先行验证后再提交**：本轮 Day 3 改动全部留在工作区未提交，待提交清单见
-      [docs/SESSION-RECORDS.md](./docs/SESSION-RECORDS.md)「第二轮」文末
+- [x] ~~**用户先行验证后再提交**：Day 3 改动~~ → 已于 2026-10-16 提交（`64a3878`）
+- [ ] **Day 4 改动已提交，但 `npm run build` 与浏览器手测仍需会话外完成**：
+      开 Windows「开发者模式」或用管理员终端跑 `npm run build`；手测清单见
+      [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 4 节
+- [ ] **`lib`、`scripts`、`prisma` 的属主仍是外来账号 `Rebirth\CodexSandboxOffline`**：
+      本会话是靠「完全权限」绕过写入限制的；建议在管理员终端执行
+      `takeown /F <目录> /R /D Y` + `icacls <目录> /grant "%USERNAME%:(OI)(CI)F" /T /C`
+      把属主改回自己，详见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #11
 - [ ] 清理临时排查脚本（沙箱内删不掉，`.gitignore` 已排除）：
       `Remove-Item scripts\tmp-*.mjs, scripts\tmp-*.ps1 -Force` 与 `Remove-Item .tmp -Recurse -Force`
 - [ ] 配好 GitHub OAuth App 凭据后，补一次 GitHub 登录的浏览器手测
 - [ ] `DECISIONS.md` 第 2 节仍写"线上用 PostgreSQL"，与第 5 节的 Turso 决策并存；按当前决定**暂不改**（已加阅读提示）
-- [ ] 若 `dev.db` 或 `.next` 再次出现"拒绝访问 / `os error 5`"，按 [docs/ISSUES.md](./docs/ISSUES.md) 的 #1 处理
+- [ ] 若 `dev.db` 或 `.next` 再次出现"拒绝访问 / `os error 5` / `SQLITE_READONLY`"，
+      按 [docs/ISSUES.md](./docs/ISSUES.md) 的 #1 与 #11 处理
 - [ ] 若 `npm run build` 报 `failed to create junction point`，打开 Windows 开发者模式或用管理员终端
       （[ISSUES #9](./docs/ISSUES.md)）
+- [ ] 公网开放前补限流（注册与新增书签都还没有速率限制，见 [DECISIONS.md 第 10 节](./DECISIONS.md)）
