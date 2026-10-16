@@ -82,13 +82,17 @@ curl.exe http://localhost:3000/api/health
 npx prisma validate
 # 预期: The schema at prisma\schema.prisma is valid 🚀
 
-# 3. 迁移是否已全部应用
+# 3. 迁移是否已全部应用（仅本地库）
 npx prisma migrate status
 # 预期: Database schema is up to date!  +  1 migration found in prisma/migrations
 
 # 4. 读 + 写 + 关联 + 级联删除全链路（第 1 条验不到写入！）
-node scripts/verify-day2-probe.mjs
+npm run db:verify:local
 # 预期: ... WRITE_OK / RELATION_OK / SEARCH_OK / CASCADE_OK ... RESULT_OK
+
+# 5. 远端库（Turso）同样走一遍，并额外对账迁移记录
+npm run db:verify:remote
+# 预期: 连得上 / schema 齐全 / 迁移对账一致 / 写入 / 级联 / 行数回到基线 ... RESULT_OK
 ```
 
 关于第 4 条为什么必要：`/api/health` 只做 `count()`，**是只读的**——数据库处于只读状态时它照样返回
@@ -170,20 +174,65 @@ node scripts/verify-bookmarks-probe.mjs
 
 线上用 Turso（远端 libSQL），本地继续用 SQLite 文件。两者同为 SQLite，`prisma/migrations` 下的迁移 SQL 可以原样套用，`schema.prisma` 的 provider 不用改。
 
-1. 在 Turso 控制台建库，拿到 `libsql://...` 地址和 token；
-2. 本地 `.env` 追加这两行，然后应用迁移：
+### 变量怎么分：本地一套，Vercel 一套
+
+| 位置 | 变量 | 值 | 谁在用 |
+| --- | --- | --- | --- |
+| 本地 `.env` | `DATABASE_URL` | `file:./dev.db` | 应用（`npm run dev`）、`prisma migrate dev`、`prisma studio` |
+| 本地 `.env` | `REMOTE_DATABASE_URL`<br>`REMOTE_DATABASE_AUTH_TOKEN` | Turso 地址 + token | **只有** `db:migrate:remote` / `db:verify:remote` |
+| Vercel 环境变量 | `DATABASE_URL`<br>`DATABASE_AUTH_TOKEN` | Turso 地址 + token | 线上应用（`lib/prisma.ts` 读这两个） |
+
+> **不要把 Turso 地址写进本地的 `DATABASE_URL`**：那样 `npm run dev` 会直接读写**线上数据**，
+> 而且 `prisma migrate dev` / `prisma studio` 会因为 CLI 不认 `libsql://` 而失效（`P1013`）。
+> 两处用途分开命名之后，本地永远是本地库，对远端的操作必须是显式的。
+
+### 步骤
+
+**1. 建库，拿到地址与 token**（二选一）
 
 ```bash
-# .env
-DATABASE_URL="libsql://<数据库名>-<组织名>.turso.io"
-DATABASE_AUTH_TOKEN="<token>"
+# 方式 A：Turso CLI
+turso db create bookmark-manager
+turso db show bookmark-manager --url        # → libsql://bookmark-manager-<组织名>.turso.io
+turso db tokens create bookmark-manager     # → 一串 token，只显示这一次
 
-npm run db:migrate:remote
+# 方式 B：Turso 控制台 → 选中数据库 → 「URL」；「Tokens」→ Create Token
 ```
 
-3. 在 Vercel 项目的环境变量里为 Production / Preview / Development 三个环境都配上同样这两个变量。
+**2. 本地 `.env` 追加这两行**（`.env` 不入库）
 
-> **不要用 `prisma migrate deploy` 连 Turso**：Prisma CLI 的 `datasource.url` 只认引擎内置的 scheme（`file:`、`postgresql:` 等），传 `libsql://` 会直接报 `P1013: The scheme is not recognized in database URL`；当前版本的 PrismaConfig 也没有 `adapter` 字段，没法让 CLI 走 driver adapter。所以远端迁移固定用 `npm run db:migrate:remote`——它用 `@libsql/client` 直接执行迁移 SQL，并把已应用记录写进 `_applied_migrations` 表，可重复执行。
+```
+REMOTE_DATABASE_URL="libsql://<数据库名>-<组织名>.turso.io"
+REMOTE_DATABASE_AUTH_TOKEN="<token>"
+```
+
+**3. 应用迁移，然后自检**
+
+```bash
+npm run db:migrate:remote
+# 预期: 待应用 N 个迁移 → ✓ <迁移名> → 完成
+
+npm run db:verify:remote
+# 预期: RESULT_OK —— 连得上 / schema 齐全 / 迁移对账一致 /
+#        写入+读回关联 / 搜索命中 / 级联清理 / 行数回到基线
+```
+
+`db:verify:remote` 会**写远端库**（用独立邮箱建一个临时用户，跑完即删），
+证明的是"能写"这件事——`migrate:remote` 打印成功只代表建表 SQL 没报错。
+
+**4. 在 Vercel 配环境变量**
+
+项目 → Settings → Environment Variables，为 **Production / Preview / Development** 三个环境都配上：
+
+| Name | Value |
+| --- | --- |
+| `DATABASE_URL` | `libsql://<数据库名>-<组织名>.turso.io` |
+| `DATABASE_AUTH_TOKEN` | 上一步的 token |
+| `AUTH_SECRET` | 本地 `AUTH_SECRET` 的值（生成方式见 `.env.example`） |
+
+配完**手动 Redeploy 一次**——改环境变量不会自动重建。
+
+> **不要用 `prisma migrate deploy` 连 Turso**：Prisma CLI 的 `datasource.url` 只认引擎内置的 scheme（`file:`、`postgresql:` 等），传 `libsql://` 会直接报 `P1013: The scheme is not recognized in database URL`；当前版本的 PrismaConfig 也没有 `adapter` 字段，没法让 CLI 走 driver adapter。所以远端迁移固定用 `npm run db:migrate:remote`——它用 `@libsql/client` 直接执行迁移 SQL，并把已应用记录写进 `_applied_migrations` 表（带 checksum 校验，迁移文件被改动过会被拒绝执行），可重复运行。
 
 ## Learn More
 
@@ -232,6 +281,7 @@ prisma/
   migrations/             SQLite 方言迁移，远端 Turso 也直接套用
 scripts/
   migrate-remote.mjs      把迁移应用到远端 libSQL（替代 prisma migrate deploy）
+  verify-remote-db.mjs    远端库自检（连接 / schema / 迁移对账 / 写入探针）
   prisma-esm-hook.mjs     纯 Node 加载生成客户端 / 解析 @ 别名的 ESM loader
   lib/db-url.mjs          探针共用的连接串解析（统一转绝对路径）
   verify-day2-probe.mjs   数据库读写全链路自检

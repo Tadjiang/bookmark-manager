@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "db:migrate:remote": "node scripts/migrate-remote.mjs",
+    "db:verify:remote": "node scripts/verify-remote-db.mjs",
+    "db:verify:local": "node scripts/verify-day2-probe.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -139,7 +139,20 @@
 - [ ] 响应式设计测试
 - [ ] 错误处理 + 加载状态
 - [ ] 部署到 Vercel
-- [ ] 配置线上数据库（远端 libSQL / Turso，`npm run db:migrate:remote`；PostgreSQL 推迟）
+- [ ] 配置线上数据库（远端 libSQL / Turso）
+
+> **线上数据库的落地方式（2026-10-16 已把工具链备好）**：
+>
+> | 命令 | 作用 |
+> | --- | --- |
+> | `npm run db:migrate:remote` | 把 `prisma/migrations` 应用到远端，记录写进 `_applied_migrations`（带 checksum 校验） |
+> | `npm run db:verify:remote` | 远端自检：连接 / schema 齐全 / 迁移对账 / 写入+关联+级联 / 行数复原 |
+> | `npm run db:verify:local` | 本地同类自检（原 `node scripts/verify-day2-probe.mjs`） |
+>
+> 本地环境变量用 **`REMOTE_DATABASE_URL` / `REMOTE_DATABASE_AUTH_TOKEN`**，与应用的
+> `DATABASE_URL` 分开——避免本地 `npm run dev` 直接读写线上数据。Vercel 上则配
+> `DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`。完整步骤见
+> [README 的「线上数据库」](./README.md)。
 
 ## 遗留待办
 

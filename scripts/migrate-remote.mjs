@@ -9,7 +9,13 @@
 //
 // 用法：
 //   npm run db:migrate:remote -- --url "libsql://xxx.turso.io" --token "<token>"
-// 省略参数时回退到环境变量 DATABASE_URL / DATABASE_AUTH_TOKEN（本地 .env）。
+//   或先在 .env 里配好 REMOTE_DATABASE_URL / REMOTE_DATABASE_AUTH_TOKEN，再直接 npm run db:migrate:remote
+//
+// 为什么用 REMOTE_ 前缀而不是复用 DATABASE_URL：
+// 应用本身（lib/prisma.ts）读的是 DATABASE_URL——本地是 file:./dev.db，Vercel 上是 libsql://。
+// 如果把 Turso 地址写进本地的 DATABASE_URL，`npm run dev` 就会直接读写**线上数据**，
+// 而 `prisma migrate dev` / `prisma studio` 也会因为 CLI 不认 libsql:// 而失效。
+// 两个用途分开命名，本地就永远是本地库，对远端的操作必须是显式的。
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -72,18 +78,21 @@ function readMigrations() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const url = args.url ?? process.env.DATABASE_URL;
-  const authToken = args.authToken ?? process.env.DATABASE_AUTH_TOKEN;
+  const url = args.url ?? process.env.REMOTE_DATABASE_URL;
+  const authToken = args.authToken ?? process.env.REMOTE_DATABASE_AUTH_TOKEN;
 
   if (!url) {
     throw new Error(
-      "缺少目标数据库地址。用 --url 传入，或先按 .env.example 配好 DATABASE_URL。",
+      "缺少目标数据库地址。用 --url 传入，或在 .env 里配好 REMOTE_DATABASE_URL（见 .env.example）。",
     );
   }
 
+  // 远端迁移脚本打到本地文件库上几乎一定是误操作：它会把记录写进自建的 _applied_migrations，
+  // 而 Prisma 的 _prisma_migrations 依然是空的，两边从此对不上。直接拦下。
   if (url.startsWith("file:")) {
-    console.warn(
-      "⚠ 目标是本地文件库。本地库由 `prisma migrate dev` 管理，通常不需要跑这个脚本。",
+    throw new Error(
+      "目标看起来是本地文件库（file:）。本地迁移请用 `npx prisma migrate dev`，" +
+        "这个脚本只用于远端 libSQL。",
     );
   }
 
