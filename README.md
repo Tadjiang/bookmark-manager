@@ -169,6 +169,9 @@ node scripts/verify-bookmarks-probe.mjs
 | 登录后跳到了外部站点 / 想确认跳转是否安全 | 站内跳转由 `lib/safe-redirect.ts` 白名单控制，护栏探针里有回归断言 |
 | 点了 GitHub 登录跳 `/api/auth/error?error=Configuration` | 出网不通或 GitHub 凭据无效；回调地址必须是 `http://localhost:3000/api/auth/callback/github` |
 | 想连 Turso 却报 `P1013` | 远端迁移固定走 `npm run db:migrate:remote`，不要用 `prisma migrate deploy`，见下节 |
+| 部署好了但 `xxx.vercel.app` 打不开（`curl: (28)` / `curl: (35) Connection was reset`） | 国内对 `*.vercel.app` 有 DNS 污染 + SNI 阻断，**不是你的代码问题**。绑自定义域名解决，见下节与 [ISSUES #12](./docs/ISSUES.md) |
+| 线上 `/api/health` 返回 `{"ok":false}` + 503 | Vercel 环境变量没配或没生效；注意"部署成功"证明不了变量存在，改完要手动 Redeploy |
+| 线上点 GitHub 登录跳 `?error=Configuration` | OAuth App 的 callback URL 没加线上域名 |
 
 ## 线上数据库（远端 libSQL / Turso）
 
@@ -294,6 +297,52 @@ scripts/
 prisma7.config.ts         Prisma 7 配置（schema / migrations / datasource.url）
 docs/                     问题库、会话记录、Day 3 / Day 4 验证文档
 ```
+
+## 部署到 Vercel
+
+项目已上线（`Status: Ready` / `Environment: Production`），但**必须绑一个自定义域名**才能在国内访问——
+`*.vercel.app` 被 DNS 污染 + SNI 阻断，且 Vercel 的服务本身没被墙。原理与诊断过程见
+[docs/ISSUES.md](./docs/ISSUES.md) 的 #12，决策见 [DECISIONS.md](./DECISIONS.md) 第 11 节。
+
+### 1. 环境变量
+
+项目 → Settings → Environment Variables，**Production / Preview / Development 三个环境都勾上**：
+
+| Name | Value |
+| --- | --- |
+| `DATABASE_URL` | Turso 地址（= 本地 `.env` 里的 `REMOTE_DATABASE_URL`，**别填成本地的 `file:`**） |
+| `DATABASE_AUTH_TOKEN` | 本地 `.env` 里的 `REMOTE_DATABASE_AUTH_TOKEN` |
+| `AUTH_SECRET` | 本地 `.env` 里的 `AUTH_SECRET` |
+
+> **不要设 `AUTH_TRUST_HOST`**：那是本地/自建用的，Vercel 上 Auth.js 会自己识别域名。
+>
+> 改完环境变量必须**手动 Redeploy**（Deployments → ⋯ → Redeploy），它在部署时注入、不会自动生效。
+>
+> 注意：本项目**构建期不需要数据库凭据**（客户端惰性初始化），所以"部署成功"**证明不了**环境变量配好了——
+> 缺变量只会在请求期退化成 `/api/health` 返回 503。判断方式就是打这个接口看 `ok` 字段。
+
+### 2. 绑自定义域名
+
+1. 项目 → Settings → Domains → Add，填域名（建议先用子域，如 `bookmarks.example.com`）；
+2. 到域名商处按提示加 DNS 记录：
+   - 子域：`CNAME` → `cname.vercel-dns.com`
+   - 主域（apex）：`A` 记录按 Vercel 提示（通常 `76.76.21.21`），或用它给的 ALIAS/ANAME
+3. 等 Vercel 的 Domains 页面显示 `Valid Configuration`（几分钟到几小时），然后验证：
+   ```powershell
+   curl.exe -i https://bookmarks.example.com/api/health
+   # 预期: HTTP/2 200 + {"ok":true}
+   ```
+
+> **不需要 ICP 备案**：备案只针对服务器在中国大陆的网站，Vercel 在境外。
+>
+> 线上 `/api/health` **刻意只返回 `{"ok":true}`**，不带统计数字（避免公网泄露数据量），
+> 所以别指望用它区分本地库和远端库——只看 `ok`。
+
+### 3. GitHub 登录
+
+要让线上也能用 GitHub 登录，去 https://github.com/settings/developers 的 OAuth App，
+在 **Authorization callback URL** 里追加一行 `https://bookmarks.example.com/api/auth/callback/github`
+（localhost 那条保留）。不改的话线上点 GitHub 登录会跳 `?error=Configuration`。
 
 ## Deploy on Vercel
 

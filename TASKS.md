@@ -39,6 +39,20 @@
 
 ## 当前进度
 
+> ### 📍 当前状态（2026-10-16 收尾）
+>
+> - ✅ **Day 1–4 全部完成**（初始化 / 数据库 / 认证 / 书签 CRUD），代码已提交并推送到 GitHub。
+> - ✅ **远端数据库（Turso）已配好**：迁移已应用，`npm run db:verify:remote` 返回 `RESULT_OK`（目前是空库）。
+> - ✅ **Vercel 已上线**：部署 `Status: Ready` / `Environment: Production`。
+> - ❌ **国内访问被阻塞**：`*.vercel.app` 遭 DNS 污染 + SNI 阻断，域名打不开。
+>   这是**当前唯一的阻塞项**，解法与步骤见 **[docs/DAY5-PLAN.md](./docs/DAY5-PLAN.md)**，
+>   技术细节见 [docs/ISSUES.md #12](./docs/ISSUES.md)。
+> - ⏸ **线上功能验证未做**（打不开就没法验），等自定义域名就绪后补。
+> - ⚠️ **Vercel 环境变量是否已配，本次未确认**——`DAY5-PLAN.md` 第 3.1 节有确认方法。
+>
+> **下一轮开工前先读 [docs/DAY5-PLAN.md](./docs/DAY5-PLAN.md)。**
+
+
 ### ✅ Day 1 - 初始化 + 部署完成
 - [x] 使用 create-next-app 初始化项目
 - [x] 配置 TypeScript + ESLint
@@ -138,10 +152,16 @@
 - [ ] 完善样式
 - [ ] 响应式设计测试
 - [ ] 错误处理 + 加载状态
-- [ ] 部署到 Vercel
-- [ ] 配置线上数据库（远端 libSQL / Turso）
+- [x] 部署到 Vercel（已上线：`Status: Ready` / `Production`）
+- [x] 配置线上数据库（远端 libSQL / Turso）——迁移已应用，`db:verify:remote` 通过
+- [ ] **【阻塞中】绑自定义域名**，让线上在国内可访问（`*.vercel.app` 被 DNS 污染 + SNI 阻断）
+- [ ] 域名就绪后：改 GitHub OAuth 回调 + 在线上重跑 Day 4 手测 12 条
+- [ ] 确认 Vercel 环境变量（`DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`）——**尚未验证**
 
-> **线上数据库的落地方式（2026-10-16 已把工具链备好）**：
+> **完整的开工指引见 [docs/DAY5-PLAN.md](./docs/DAY5-PLAN.md)**（进度快照、域名绑定清单、
+> 未验证事项、环境注意、遗留汇总都在那里）。
+>
+> 远端运维命令：
 >
 > | 命令 | 作用 |
 > | --- | --- |
@@ -151,14 +171,18 @@
 >
 > 本地环境变量用 **`REMOTE_DATABASE_URL` / `REMOTE_DATABASE_AUTH_TOKEN`**，与应用的
 > `DATABASE_URL` 分开——避免本地 `npm run dev` 直接读写线上数据。Vercel 上则配
-> `DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`。完整步骤见
-> [README 的「线上数据库」](./README.md)。
+> `DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`。详见 [README 的「线上数据库」](./README.md)。
 
 ## 遗留待办
 
 - [x] ~~**用户先行验证后再提交**：Day 3 改动~~ → 已于 2026-10-16 提交（`64a3878`）
 - [x] ~~**Day 4 的 `npm run build` 与浏览器手测**~~ → 2026-10-16 均已完成：构建 exit 0
       （8 条路由，`/dashboard` 为 `◐`），浏览器手测 12 条全部通过
+- [ ] **【最高优先级】绑自定义域名**：`*.vercel.app` 在国内被 DNS 污染 + SNI 阻断，
+      线上打不开。步骤见 [docs/DAY5-PLAN.md](./docs/DAY5-PLAN.md) 第 1 节，
+      原理见 [docs/ISSUES.md #12](./docs/ISSUES.md)
+- [ ] **确认 Vercel 环境变量**（`DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`）：
+      本次会话未确认；取值命令与判断方式见 [docs/DAY5-PLAN.md](./docs/DAY5-PLAN.md) 第 3.1 节
 - [ ] **`lib`、`scripts`、`prisma` 的属主仍是外来账号 `Rebirth\CodexSandboxOffline`**：
       沙箱会话是靠「完全权限」绕过写入限制的；建议在管理员终端执行
       `takeown /F <目录> /R /D Y` + `icacls <目录> /grant "%USERNAME%:(OI)(CI)F" /T /C`

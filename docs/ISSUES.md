@@ -500,4 +500,76 @@ icacls <文件> /setintegritylevel Low                    # 单个文件（如 d
 `dev.db` 报 `SQLITE_READONLY` 时，SQLite 还需要在同目录建 `-journal`/`-wal`，
 所以目录能不能写同样关键。
 
+---
+
+## #12 `*.vercel.app` 在国内被 DNS 污染 + SNI 阻断，部署域名打不开（2026-10-16）
+
+**现象**
+
+Vercel 后台显示部署 `Status: Ready`、`Environment: Production`，构建 50 秒无报错，
+但在本项目所在网络（中国大陆）访问部署域名：
+
+```
+curl: (28) Failed to connect to bookmark-manager-....vercel.app:443 after 21122 ms: Could not connect to server
+curl: (35) Recv failure: Connection was reset
+```
+
+**诊断过程（四步，可复用）**
+
+1. **先排除"域名写错"**——那个域名一开始确实是猜的（`...-five-ashen`），真名在 Vercel
+   后台的 `Domains` 一栏里。**所以第一步永远是去后台抄真域名**。
+
+2. **确认是不是整个通配域被污染**——解析一个**根本不存在**的子域：
+   ```powershell
+   Resolve-DnsName zzz-definitely-not-real-99999.vercel.app
+   # -> 31.13.67.19 / 2a03:2880:f127:83:face:b00c:0:25de   ← Facebook 的段
+   ```
+   不存在的域名也能解析出结果 ⇒ 不是"域名写错"，而是**整个 `*.vercel.app` 的通配解析被投毒**。
+   （真域名同样解析到 `...:face:b00c:...`。）
+
+3. **确认服务端没问题**——用真实 IP 做对照组，换一个同样托管在 Vercel 上的域名：
+   ```powershell
+   curl.exe -sI --resolve turso.tech:443:76.76.21.21 https://turso.tech
+   # -> HTTP/2 200        （76.76.21.21 就是 Vercel 的 anycast IP）
+   ```
+   `turso.tech` 官网本身就部署在 Vercel 上，它能通 ⇒ **Vercel 的服务没被墙，被拦的只是域名**。
+
+4. **定位到 SNI 阻断**——同一个 IP，换回自己的部署域名：
+   ```powershell
+   curl.exe -i --resolve <部署域名>:443:76.76.21.21 https://<部署域名>/api/health
+   # -> curl: (35) Recv failure: Connection was reset
+   ```
+   同 IP、同端口，`turso.tech` 通、`*.vercel.app` 被重置 ⇒ **防火墙按 TLS 握手里的 SNI 字段阻断**。
+
+**根因**
+
+国内对 `*.vercel.app` 做了两层拦截：
+
+1. **DNS 污染**：解析返回无关 IP（Facebook 的段）；
+2. **SNI 阻断**：TLS 握手时读到 SNI 是 `*.vercel.app` 就直接发 RST。
+
+第一层能绕（`--resolve`、hosts），第二层绕不过去。**两层经常同时出现**，所以只解决 DNS 会以为"还是不行"。
+
+**解法**
+
+绑定**自定义域名**（Vercel 免费支持）。SNI 变成自己的域名，不在黑名单里，而
+Vercel 的 anycast IP 本身是通的（第 3 步已证明）。绑定步骤见 README 的「部署到 Vercel」一节。
+
+**无效的做法（别再试，浪费时间）**
+
+- 改 hosts 文件 / `curl --resolve`：只治 DNS 那一层，SNI 阻断照旧。
+- 换 Vercel 的另一个 anycast IP（`216.198.79.1` 同样 `Connection was reset`）。
+- 用 `vercel.app` 的"短域名"：`*.vercel.app` 下**所有**子域都被覆盖。
+
+**怎么快速判断**
+
+| 报错 | 大概率原因 |
+| --- | --- |
+| `curl: (28) ... Could not connect to server` | DNS 被投毒（解析不到真实 IP） |
+| `curl: (35) Recv failure: Connection was reset`，**而同一个 IP 换个域名就能通** | SNI 阻断 |
+
+一个命令就能区分是"我的域名有问题"还是"整个域被拦"：拿一个已知可用的
+Vercel 托管域名（如 `turso.tech`）对着同一个 IP 试一次。
+
+
 

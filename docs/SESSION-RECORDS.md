@@ -5,6 +5,87 @@
 
 ---
 
+## 2026-10-16（第四轮）· 配通线上数据库、部署上线，并查清"线上打不开"的原因
+
+**会话目标**：先把线上数据库（Turso）配通，再部署到 Vercel 并验证。
+
+### 做了什么
+
+**1. 先把工具链补上（发现并修掉一个隐患）**
+
+原 README 让人把 Turso 地址写进本地的 `DATABASE_URL`。这有两个后果：
+`npm run dev` 会直接读写**线上真实数据**，而且 `prisma migrate dev` / `prisma studio`
+会因为 CLI 不认 `libsql://` 而报 `P1013`。改成两套变量分开：
+
+| 位置 | 变量 | 谁在用 |
+| --- | --- | --- |
+| 本地 `.env` | `DATABASE_URL=file:./dev.db` | 应用、`prisma migrate dev`、studio |
+| 本地 `.env` | `REMOTE_DATABASE_URL` / `REMOTE_DATABASE_AUTH_TOKEN` | 只有两个远端运维脚本 |
+| Vercel | `DATABASE_URL` / `DATABASE_AUTH_TOKEN` | 线上应用 |
+
+同时把 `migrate-remote` 打到 `file:` 目标时从「警告」改成**直接拒绝**——否则它会把记录
+写进自建的 `_applied_migrations`，而 Prisma 的 `_prisma_migrations` 仍是空的，两边从此对不上。
+
+**2. 新增远端自检脚本**
+
+`scripts/verify-remote-db.mjs`（`npm run db:verify:remote`）：连得上 / schema 齐全 /
+迁移记录与本地对账 / 写入+读回关联+搜索+级联 / 行数复原。走的是**应用同一条链路**
+（`@prisma/adapter-libsql` + 生成的 Prisma Client），而不是另写一套裸 SQL。
+
+**3. 用户侧执行：建库 → 迁移 → 自检**
+
+Turso 建库（网页控制台；CLI 在 Windows 上需要 WSL，为一个库装 WSL 不划算），
+`remote` 变量填进 `.env`，然后 `db:migrate:remote` + `db:verify:remote` → **`RESULT_OK`**。
+
+**4. 部署与"打不开"的排查**
+
+`git push` 触发 Vercel 部署，后台显示 `Status: Ready` / `Environment: Production`，
+但国内访问一律失败。排查出一条完整的证据链（详见 [ISSUES #12](./ISSUES.md)）：
+
+| 观察 | 结论 |
+| --- | --- |
+| 一开始用的域名 `...-five-ashen.vercel.app` 是**猜的**，真名在 Vercel 后台 `Domains` 一栏 | 先排除"域名写错" |
+| 解析**根本不存在**的子域 `zzz-...-99999.vercel.app` 也返回 Facebook 的 IP | 整个 `*.vercel.app` **通配域 DNS 被投毒** |
+| `--resolve turso.tech:443:76.76.21.21` → `HTTP/2 200`（`76.76.21.21` 是 Vercel anycast） | **Vercel 服务没被墙**，turso 官网就在上面 |
+| 同一个 IP，换成自己的部署域名 → `curl: (35) Recv failure: Connection was reset` | **SNI 阻断**：防火墙按 TLS 握手里的域名掐断 |
+
+结论：`*.vercel.app` 被两层拦截，DNS 那层能绕、SNI 那层绕不过。
+**解法是绑自定义域名**（Vercel anycast 本身可达，换个域名即可），且因为 Vercel 在境外，
+**不需要 ICP 备案**。
+
+### 验证结果
+
+| 验证项 | 结果 |
+| --- | --- |
+| 本地 `db:verify:local`（Day 2 探针） | ✅ `RESULT_OK` |
+| 远端 `db:verify:remote`（用户执行） | ✅ `RESULT_OK`，schema 齐全、迁移对账一致、写入/级联正常、`0,0,0 → 0,0,0` |
+| `npm run lint` / `npx tsc --noEmit` | ✅ 0 错误 |
+| Vercel 部署 | ✅ `Ready` / `Production`（50 秒构建） |
+| 线上 `/api/health` | ⏸ **未能验证**（域名打不开）；Vercel 环境变量是否已配也**未确认** |
+
+### 阻塞与遗留
+
+1. **【阻塞】绑自定义域名**——不解决则国内无人能访问线上站点。步骤见
+   [DAY5-PLAN.md](./DAY5-PLAN.md) 第 1 节。用户已决定去买域名。
+2. **Vercel 环境变量未确认**（`DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`）。
+   注意"部署成功"证明不了它存在——本项目刻意做成构建期不需要数据库凭据，
+   缺变量只会在请求期退化成 503。确认方法见 DAY5-PLAN 第 3.1 节。
+3. 线上注册/登录与 Day 4 的 CRUD 手测**全部推迟**到域名就绪后。
+4. `lib` / `scripts` / `prisma` 属主仍是外来账号（[ISSUES #11](./ISSUES.md)）。
+
+### 本次新增/修改的文件
+
+```
+新增  scripts/verify-remote-db.mjs      远端库自检
+新增  docs/DAY5-PLAN.md                 下一轮开工指引（进度快照 + 域名绑定清单 + 未验证事项）
+修改  scripts/migrate-remote.mjs        改用 REMOTE_* 变量；拒绝 file: 目标
+修改  package.json                      新增 db:verify:remote / db:verify:local
+修改  .env.example  README.md           变量分工表 + Turso/Vercel 完整步骤
+修改  TASKS.md  DECISIONS.md（第 11 节）  docs/ISSUES.md（#12）  docs/SESSION-RECORDS.md
+```
+
+---
+
 ## 2026-10-16（第三轮）· 实现 Day 4 书签 CRUD，并修掉工作区写入权限问题
 
 **会话目标**：按 [TASKS.md](../TASKS.md) 的 Day 4 清单落地书签 CRUD（新增/列表/搜索/编辑/删除），

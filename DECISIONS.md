@@ -497,4 +497,37 @@ Day 3 的登录流程踩过同一个点，这里抽出来给两个 actions 模�
 - **`verify-bookmarks-probe.mjs` 没有 import 数据访问层**（DAL 依赖 `@/auth` 与 `next/navigation`，
   纯 Node 加载不了），只验证了相同查询形状的行为；DAL 自身靠静态护栏守。详见 Day 4 验证文档第 3 节。
 
+---
+
+## 11. 线上入口必须用自定义域名，不能依赖 `*.vercel.app`（2026-10-16）
+
+### 背景
+
+Day 5 部署时就绪后，Vercel 后台显示 `Status: Ready` / `Environment: Production`，
+但在国内网络完全打不开。排查过程见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #12。
+
+### 决策
+
+**线上对外入口使用自定义域名；`*.vercel.app` 只当作 Vercel 的内部标识，不作为可访问地址。**
+
+具体做法：在 Vercel 项目里添加自己的（子）域名，域名商处加一条 CNAME 指向
+`cname.vercel-dns.com`，之后 GitHub OAuth 的 callback URL 也一并改成新域名。
+
+### 理由
+
+- `*.vercel.app` 在国内被**两层**拦截：DNS 解析被投毒（返回 Facebook 的 IP），
+  以及 TLS 握手按 SNI 直接 RST。后者无法用 hosts / `--resolve` 绕过。
+- **Vercel 本身没被墙**：`turso.tech` 官网就托管在 Vercel 的同一个 anycast IP
+  （`76.76.21.21`）上，实测 `HTTP/2 200`。所以问题只在域名，换个域名即可。
+- 这不是"验证不方便"的工程问题，而是**国内用户根本打不开**——等于没上线。
+
+### 代价与遗留
+
+- 需要自备一个域名（Vercel 侧绑定免费）。
+- **不需要 ICP 备案**：备案只针对服务器在中国大陆的网站，Vercel 在境外。
+- 域名生效前，**线上的 `/api/health`、注册登录、Day 4 的 CRUD 都无法在会话内验证**；
+  本地 `npm run dev` 的手测已全过，线上验证要等域名就绪后补。
+- 若将来面向国内用户规模化，还要单独评估 Vercel 在国内的访问质量
+  （anycast 可达 ≠ 速度好），必要时考虑国内 CDN 或换托管。
+
 

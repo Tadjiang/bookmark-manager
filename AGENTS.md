@@ -27,6 +27,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   （`getBookmark` 用 `findFirst({ where: { id, userId } })`，`deleteBookmark` 用 `deleteMany(同款)`）。
   标签名一律经 `lib/bookmark-input.ts` 的 `normalizeTagName` 转小写后入库，
   否则 SQLite 区分大小写会让 `Work` 与 `work` 变成两行。见 `DECISIONS.md` 第 10 节。
+- **线上入口**：本地 `.env` 的 `DATABASE_URL` 永远指向 `file:./dev.db`；远端地址只放在
+  `REMOTE_DATABASE_URL` / `REMOTE_DATABASE_AUTH_TOKEN`（给 `db:migrate:remote` / `db:verify:remote` 用）。
+  Vercel 上配 `DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUTH_SECRET`。**线上必须用自定义域名**，
+  `*.vercel.app` 在国内不可访问——见 `DECISIONS.md` 第 11 节。
+- **当前进度与下一轮开工指引在 `docs/DAY5-PLAN.md`**（Day 1–4 已完成，阻塞项是绑自定义域名）。
 
 ## Next.js 16 的两条硬约束（踩过，别再犯）
 
@@ -41,9 +46,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 改代码或排查前先看这里，能省掉重复踩坑：
 
-- `TASKS.md` —— 任务清单与进度
+- `TASKS.md` —— 任务清单与进度（顶部有「当前状态」，含当前阻塞项）
 - `DECISIONS.md` —— 架构决策记录（第 4 节 Prisma 7 差异、第 8 节认证选型、第 9 节 cacheComponents 写法、
-  第 10 节书签 CRUD 形态）
+  第 10 节书签 CRUD 形态、第 11 节线上入口必须用自定义域名）
+- `docs/DAY5-PLAN.md` —— **下一轮开工先读这个**：进度快照、域名绑定清单、
+  "还没验证过的事"、环境注意、遗留汇总
 - `docs/DAY3-VERIFICATION.md` —— 认证的验证结果、手测清单与排错对照表
 - `docs/DAY4-PLAN.md` —— 书签 CRUD 的规划（含当时的取舍，已落地为方案 A）
 - `docs/DAY4-VERIFICATION.md` —— 书签 CRUD 的验证结果、探针覆盖**边界**、手测清单与排错对照表
@@ -59,6 +66,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   `npm run build` 的情况随会话不同：2026-10-16 那次 CLI 已经能跑起来、走到了 Turbopack 阶段，
   卡在 Windows 符号链接权限上（见下）而不是 `spawn EPERM`。总之构建别指望在会话内完成。
 - 沙箱还禁止**监听端口**（`listen EACCES`）与**出网**。因此真实 OAuth 往返、浏览器手测也无法在会话内完成。
+- **`*.vercel.app` 在本机网络下不可访问**：DNS 被投毒（解析到 Facebook 的 IP）+ TLS 按 SNI 阻断。
+  **不要**再试 `curl` / `--resolve` / 改 hosts 去"连一下线上站点"，那是白费功夫；
+  Vercel 的服务本身没被墙（`turso.tech` 就在同一个 anycast IP 上且可达），**唯一解法是绑自定义域名**。
+  诊断命令与判断表见 `docs/ISSUES.md` 的 #12，绑定步骤见 `docs/DAY5-PLAN.md`。
+- **远端数据库也连不上**（出网被禁）：`npm run db:verify:remote` / `db:migrate:remote` 必须在用户自己的
+  终端跑，或让用户把输出贴回来。
 - **写入被拒先分清三种原因**，别一律当成"属主问题"去 `takeown`：
   1. 进程是**低完整性级别**（`whoami /all` 看 `Mandatory Label`），而对象**没有** `Low` 完整性标记
      → 报 `Access to the path ... denied`；这是 MIC 在 DACL 之后判定，`icacls` 看不出来，见 #11；
