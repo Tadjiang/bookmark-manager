@@ -6,7 +6,8 @@
 
 - **框架**：Next.js 16 (App Router) + React 19 + TypeScript
 - **样式**：Tailwind CSS 4
-- **数据库 / ORM**：Prisma 7 + SQLite（本地开发），PostgreSQL（线上）
+- **数据库 / ORM**：Prisma 7 + SQLite（本地开发）/ 远端 libSQL - Turso（线上）
+- **认证**：Auth.js v5（`next-auth@beta`）—— GitHub OAuth + 邮箱密码，JWT 会话
 - **部署**：Vercel
 
 ## 项目进度
@@ -15,7 +16,7 @@
 | ---- | ---- | ---- |
 | Day 1 | 初始化 + 部署 | ✅ 已完成 |
 | Day 2 | 数据库 + ORM 配置 | ✅ 已完成 |
-| Day 3 | 用户认证 | ⏳ 未开始 |
+| Day 3 | 用户认证 | ✅ 已完成（GitHub 真实授权待手测） |
 | Day 4 | 书签 CRUD | ⏳ 未开始 |
 | Day 5 | UI 优化 + 部署 | ⏳ 未开始 |
 
@@ -23,12 +24,14 @@
 
 - [TASKS.md](./TASKS.md) —— 任务清单与进度
 - [DECISIONS.md](./DECISIONS.md) —— 架构决策记录（ADR）
+- [docs/DAY3-VERIFICATION.md](./docs/DAY3-VERIFICATION.md) —— 认证的验证结果、手测清单与排错对照表
+- [docs/DAY4-PLAN.md](./docs/DAY4-PLAN.md) —— Day 4（书签 CRUD）的规划与待定问题
 - [docs/ISSUES.md](./docs/ISSUES.md) —— 踩过的坑：现象 / 根因 / 解法
 - [docs/SESSION-RECORDS.md](./docs/SESSION-RECORDS.md) —— 会话过程记录
 
 ## 开始使用
 
-首次运行前需要准备好数据库连接：
+首次运行前需要准备好数据库连接与认证密钥：
 
 ```bash
 # 1. 安装依赖（postinstall 会自动生成 Prisma Client）
@@ -37,9 +40,26 @@ npm install
 # 2. 从模板创建环境变量文件（PowerShell: Copy-Item .env.example .env）
 cp .env.example .env
 
-# 3. 应用数据库迁移
+# 3. 生成 AUTH_SECRET 并填进 .env
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+
+# 4. 应用数据库迁移
 npx prisma migrate dev
 ```
+
+`.env` 需要的变量（`.env.example` 里有注释版）：
+
+```dotenv
+DATABASE_URL="file:./dev.db"
+AUTH_SECRET="<上面生成的>"
+AUTH_GITHUB_ID=""        # 可选：不填则只保留邮箱密码登录
+AUTH_GITHUB_SECRET=""
+AUTH_TRUST_HOST="true"   # 本地/自建部署需要；Vercel 上不需要
+```
+
+想启用 GitHub 登录：在 https://github.com/settings/developers 新建 OAuth App，
+**Authorization callback URL** 填 `http://localhost:3000/api/auth/callback/github`，
+把 Client ID / Secret 填进 `.env` 后重启 dev server。
 
 然后启动开发服务器：
 
@@ -84,14 +104,45 @@ npx prisma studio --url "file:///D:/my_vibecoding/bookmark-manager/dev.db"
 > 必须带 `--url "file:///..."`：Prisma 7.10.0 的 studio 用 `split("://")` 判断协议，`file:./dev.db` 不含 `://`，
 > 会误报 `Prisma Studio is not supported for the "file:./dev.db" protocol`。原因与排查见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #3。
 
+## 自己验证认证链路
+
+改动认证相关代码后按顺序跑这几条（前两条不需要数据库或服务）：
+
+```bash
+# 1. 安全护栏：open redirect、会话字段白名单（密码哈希不得进 JWT）、错误码文案
+node scripts/verify-auth-guards.mjs
+# 预期: 52 项 PASS + RESULT_OK
+
+# 2. adapter 契约：官方 @auth/prisma-adapter 的 14 个方法在 Prisma 7 上是否真跑通
+node scripts/verify-auth-adapter.mjs      # 需可写库，先停 dev server
+# 预期: 19 项 PASS + RESULT_OK
+
+# 3. 邮箱+密码：注册入库、密码校验、各失败分支
+node scripts/verify-auth-probe.mjs        # 同上
+# 预期: 16 项 PASS + RESULT_OK
+
+# 4. HTTP 端到端：登录 → cookie → 会话解出 user.id → 受保护路由放行 → 登出 → 未登录被拦
+npm run dev                               # 另开窗口
+node scripts/verify-auth-session.mjs
+# 预期: 全部 PASS + RESULT_OK
+```
+
+每条命令的详细说明、预期输出与排错对照表见 [docs/DAY3-VERIFICATION.md](./docs/DAY3-VERIFICATION.md)。
+
 ## 常见问题
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
+| 构建报 `Route segment config "dynamic" is not compatible with nextConfig.cacheComponents` | 删掉该段配置，改为用 `<Suspense>` 包住读会话/查库的部分，见 [ISSUES](./docs/ISSUES.md) 的 #7 |
+| 构建报 `uncached or runtime data during prerendering` | 同上：`auth()`、`searchParams`、数据库查询都属请求期数据，必须在 `<Suspense>` 内 |
+| 构建报 `Both middleware file ... and proxy file ... are detected` | Next 16 已把 `middleware` 改名 `proxy`，删掉 `middleware.ts`，见 [ISSUES](./docs/ISSUES.md) 的 #8 |
+| 构建报 `failed to create junction point ... os error 5` | 打开 Windows「开发者模式」，或用管理员终端构建，见 [ISSUES](./docs/ISSUES.md) 的 #9 |
 | `next build` 报 `EPERM ... .next\trace` 或 `os error 5` | `.next` 的属主不在你名下。管理员窗口执行 `takeown /F ".next" /R /D Y` + `icacls ".next" /grant "%USERNAME%:(OI)(CI)F" /T /C`，见 [ISSUES](./docs/ISSUES.md) 的 #1 |
 | Prisma 写入报 `SQLITE_READONLY` | 同上，`dev.db` 属主/权限问题；或文件被别的进程锁着 |
-| `spawn EPERM`（`next dev` / `prisma migrate status`） | 受限沙箱禁止管道子进程，在普通终端里跑，见 [ISSUES](./docs/ISSUES.md) 的 #2 |
+| `spawn EPERM`（`next dev` / `prisma migrate status`） | 受限沙箱禁止 `fork`/管道子进程，在普通终端里跑，见 [ISSUES](./docs/ISSUES.md) 的 #2、#10 |
 | 纯 Node 里 import 生成的客户端报 `ERR_MODULE_NOT_FOUND: .../enums` | 生成代码用无扩展名相对导入，需注册 `scripts/prisma-esm-hook.mjs`，见 [ISSUES](./docs/ISSUES.md) 的 #4 |
+| 登录后跳到了外部站点 / 想确认跳转是否安全 | 站内跳转由 `lib/safe-redirect.ts` 白名单控制，护栏探针里有回归断言 |
+| 点了 GitHub 登录跳 `/api/auth/error?error=Configuration` | 出网不通或 GitHub 凭据无效；回调地址必须是 `http://localhost:3000/api/auth/callback/github` |
 | 想连 Turso 却报 `P1013` | 远端迁移固定走 `npm run db:migrate:remote`，不要用 `prisma migrate deploy`，见下节 |
 
 ## 线上数据库（远端 libSQL / Turso）
@@ -125,20 +176,39 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 ## 目录结构
 
 ```
+auth.ts                   Auth.js 配置（GitHub + Credentials、JWT 会话、惰性 PrismaAdapter）
+proxy.ts                  受保护路由（Next 16 的 proxy，替代已弃用的 middleware）
 app/
+  actions/auth.ts         登录 / GitHub 登录 / 注册 / 登出 四个 Server Action
+  auth-forms.tsx          客户端表单（useActionState 展示错误）
+  api/auth/[...nextauth]/ Auth.js 路由处理器
   api/health/route.ts     数据库连通性自检接口
+  signin/ register/       登录页 / 注册页（静态外壳 + Suspense 结构）
+  dashboard/page.tsx      受保护页面
   generated/prisma/       Prisma 生成的客户端（.gitignore 排除，不入库）
   layout.tsx / page.tsx / globals.css
-lib/prisma.ts             惰性初始化的 PrismaClient（必须用 getPrisma()）
+lib/
+  prisma.ts               惰性初始化的 PrismaClient（必须用 getPrisma()）
+  password.ts             scrypt 密码哈希（零依赖）
+  credentials.ts          邮箱归一化 + 密码校验
+  auth-config.ts          GitHub 是否启用的判定
+  auth-errors.ts          Auth.js 错误码 → 中文文案
+  safe-redirect.ts        站内跳转白名单（防 open redirect）
+types/next-auth.d.ts      给 session.user 补 id
 prisma/
   schema.prisma           数据模型（认证 4 张表 + 业务 2 张表）
   migrations/             SQLite 方言迁移，远端 Turso 也直接套用
 scripts/
   migrate-remote.mjs      把迁移应用到远端 libSQL（替代 prisma migrate deploy）
-  verify-day2-probe.mjs   数据库读写全链路自检探针
-  prisma-esm-hook.mjs     纯 Node 加载生成客户端的 ESM loader
+  prisma-esm-hook.mjs     纯 Node 加载生成客户端 / 解析 @ 别名的 ESM loader
+  lib/db-url.mjs          探针共用的连接串解析（统一转绝对路径）
+  verify-day2-probe.mjs   数据库读写全链路自检
+  verify-auth-guards.mjs  认证安全护栏自检
+  verify-auth-adapter.mjs Prisma adapter 契约自检
+  verify-auth-probe.mjs   邮箱+密码链路自检
+  verify-auth-session.mjs HTTP 端到端会话链路自检
 prisma7.config.ts         Prisma 7 配置（schema / migrations / datasource.url）
-docs/                     问题库与会话记录
+docs/                     问题库、会话记录、Day 3 验证文档
 ```
 
 ## Deploy on Vercel

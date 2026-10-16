@@ -11,10 +11,12 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@auth/prisma-adapter": "^2.11.3",
     "@libsql/client": "^0.18.0",
     "@prisma/adapter-libsql": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "next": "16.4.0",
+    "next-auth": "^5.0.0-beta.32",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

@@ -5,6 +5,151 @@
 
 ---
 
+## 2026-10-15（第二轮）· 实现 Day 3 用户认证并完成构建 + 端到端验证
+
+**会话目标**：按 [TASKS.md](../TASKS.md) 的 Day 3 清单集成 Auth.js（NextAuth v5），同时支持 GitHub OAuth
+与邮箱+密码两种登录方式，包含登录/注册/登出页面与受保护路由，并通过 lint、构建与端到端验证。
+
+**用户决策**：登录方式**两者都要**（GitHub OAuth + 邮箱+密码）。
+
+**未提交**：本轮所有改动都留在工作区，用户要求先自行验证后再提交（见文末「待提交清单」）。
+
+**追加（同日）**：应要求补充了 [Day 4 规划](./DAY4-PLAN.md)（书签 CRUD 的设计取舍、越权防护、
+验证计划，以及需要先拍板的 3 个问题），代码未开工。
+
+### 技术选型（含依据）
+
+| 项 | 选择 | 依据 |
+| --- | --- | --- |
+| 认证库 | `next-auth@5.0.0-beta.32`（Auth.js v5） | 其 package.json 的 peerDependencies 明确支持 `next: ^14 \|\| ^15 \|\| ^16`；npm `latest` 仍是 v4（4.24.15），v5 在 `beta` 标签上 |
+| 配套 | `@auth/prisma-adapter@2.11.3` + `@auth/core@0.41.3` | 官方 Prisma 适配器，装完无 peer 冲突 |
+| 会话策略 | **JWT** | Auth.js 不允许 Credentials provider 使用数据库会话；两种登录方式共用同一套 JWT |
+| 密码哈希 | Node 内置 `crypto.scrypt`（`lib/password.ts`） | 零依赖；本机缺 Python/编译工具链，`better-sqlite3` 这类原生模块踩过坑（见 DECISIONS 第 4 节） |
+
+### 主要交付
+
+**代码**（13 个新文件 + 7 处修改，详见文末清单）
+
+- `auth.ts`：GitHub + Credentials 两个 provider、JWT 会话、`jwt`/`session` 回调、**惰性 PrismaAdapter**
+- `lib/password.ts`（scrypt 哈希，含参数自描述格式与定时安全比较）
+- `lib/credentials.ts`（邮箱归一化 + 密码校验，抽出来便于脱离 HTTP 测试）
+- `lib/auth-config.ts`（GitHub 是否启用的判定）、`lib/auth-errors.ts`（13 个 Auth.js 错误码 → 中文文案）
+- `lib/safe-redirect.ts`（站内跳转白名单）
+- `app/actions/auth.ts`（登录/GitHub 登录/注册/登出 四个 Server Action）
+- `app/auth-forms.tsx`（客户端表单，`useActionState` 展示错误）
+- `app/signin/`、`app/register/`、`app/dashboard/`（三个页面，均按「静态外壳 + Suspense」结构）
+- `app/api/auth/[...nextauth]/route.ts`、`proxy.ts`（受保护路由）、`types/next-auth.d.ts`（session.user.id）
+
+**探针**（4 个，可重复运行的回归工具）
+
+- `scripts/verify-auth-guards.mjs`：安全护栏（open redirect / 会话字段白名单 / 错误码文案 / DB 路径解析）
+- `scripts/verify-auth-adapter.mjs`：官方 adapter 的 14 个方法在 Prisma 7 上是否真跑通
+- `scripts/verify-auth-probe.mjs`：注册入库 + 密码校验 + 失败分支
+- `scripts/verify-auth-session.mjs`：HTTP 全链路（CSRF → 凭据回调 → cookie → 会话 → 受保护路由）
+- `scripts/lib/db-url.mjs`：探针共用的连接串解析（统一转绝对路径）
+
+### 本轮修掉的真问题
+
+1. **`force-dynamic` 与 `cacheComponents` 互斥** → `/dashboard`、`/` 编译失败、整页 500。
+   原因是 Next 16 在 cacheComponents 下移除了 `dynamic`/`revalidate`/`fetchCache` 段配置。
+   按官方 `authentication-with-cache-components` 指南改成「静态外壳 + 请求期数据下沉到 `<Suspense>`」，
+   四个页面全部重构并配同构骨架屏。详见 [ISSUES #7](./ISSUES.md)。
+2. **`middleware.ts` 在 Next 16 已弃用** → 迁移为 `proxy.ts`（导出名与运行时都有变化：proxy 固定 nodejs）。
+   详见 [ISSUES #8](./ISSUES.md)。
+3. **安全：open redirect** → 登录后跳转目标来自 `?callbackUrl=`，原先直接信任，可被构造成外部站点。
+   新增 `safeCallbackUrl()` 只放行站内相对路径，并覆盖 `//host`、`/\host`、控制字符等绕过写法。
+4. **安全：密码哈希会进会话 JWT** → `PrismaAdapter` 的 `getUser`/`createUser` 返回**整行 User**（含
+   `passwordHash`），JWT 会话把 token 编码进 cookie，哈希会出现在 cookie 与 `/api/auth/session` 里。
+   新增 `toSessionUser()` 白名单（只放 id/name/email/picture）。
+5. **探针自身的路径解析 bug** → `/^[A-Za-z]:/` 会把 `./dev.db` 里的点当盘符，导致相对路径被当成绝对路径，
+   libsql 便按当前工作目录解析、可能连到一个**新建的空库**（最危险的一类静默错误）。
+   抽出 `scripts/lib/db-url.mjs` 并加回归断言。
+
+### 环境/工具链踩坑（已记录）
+
+- 受限沙箱：`fork()` **完全**被禁（带不带管道都一样）、禁止监听端口、禁止出网。详见 [ISSUES #10](./ISSUES.md)。
+- `next build`（Turbopack）需要创建 junction；`.next` 下残留的旧账号文件也让构建一度失败，
+  清理并重新生成后通过。junction 权限问题见 [ISSUES #9](./ISSUES.md)。
+
+### 验证结果（全部实跑）
+
+| 验证项 | 结果 |
+| --- | --- |
+| `eslint` / `tsc --noEmit` | ✅ 均 exit 0 |
+| `verify-auth-guards.mjs` | ✅ `RESULT_OK`（52 项断言） |
+| `verify-auth-adapter.mjs` | ✅ `RESULT_OK`（19 项，含 linkAccount / 复合唯一键 / 级联删除） |
+| `verify-auth-probe.mjs` | ✅ `RESULT_OK`（16 项，三种邮箱写法 + 四个拒绝分支 + 数据自清理） |
+| `verify-auth-session.mjs`（dev） | ✅ `RESULT_OK` |
+| `verify-auth-session.mjs`（**生产构建**） | ✅ `RESULT_OK` |
+| `npm run build` | ✅ exit 0，`BUILD_ID=bl4_ZobflmWcOEqijd9bz`；`/`、`/dashboard`、`/register`、`/signin` 为 Partial Prerender |
+| GitHub provider 条件注册 | ✅ 有凭据→`providers` 含 github+credentials、按钮可见、入口 302 到 github.com；无凭据→仅 credentials、按钮隐藏 |
+| Day 2 回归 | ✅ `verify-day2-probe.mjs` `RESULT_OK`；数据库回到基线 `{u:1,a:0,s:0}`、无残留 |
+
+### 未能完成（需要用户）
+
+- **GitHub 真实授权往返**：沙箱出网被禁（连 github.com 都连不上），只验到"入口 302 到
+  `github.com/login/oauth/authorize`"这一步。需要真实 OAuth App 凭据 + 浏览器。
+- **浏览器手测**：10 条清单见 [DAY3-VERIFICATION.md](./DAY3-VERIFICATION.md) 第 3 节。
+
+### 待提交清单（用户自行验证后提交）
+
+**新增（13 个文件 / 目录）**
+
+```
+auth.ts
+proxy.ts
+lib/auth-config.ts
+lib/auth-errors.ts
+lib/credentials.ts
+lib/password.ts
+lib/safe-redirect.ts
+types/next-auth.d.ts
+app/actions/auth.ts
+app/auth-forms.tsx
+app/api/auth/[...nextauth]/route.ts
+app/signin/page.tsx
+app/register/page.tsx
+app/dashboard/page.tsx
+docs/DAY3-VERIFICATION.md
+scripts/lib/db-url.mjs
+scripts/verify-auth-adapter.mjs
+scripts/verify-auth-guards.mjs
+scripts/verify-auth-probe.mjs
+scripts/verify-auth-session.mjs
+```
+
+**修改（7 个文件）**
+
+```
+package.json / package-lock.json     加了 next-auth@beta 与 @auth/prisma-adapter
+next.config.ts                       未改
+app/layout.tsx                       lang=zh-CN + 中文 metadata
+app/page.tsx                         首页展示登录态，改成 Suspense 结构
+.env.example                         新增 AUTH_SECRET / AUTH_GITHUB_ID / AUTH_GITHUB_SECRET / AUTH_TRUST_HOST
+.gitignore                           新增 /.npm-cache/、/scripts/tmp-*、/.tmp/
+scripts/prisma-esm-hook.mjs          支持 @/* 别名与无扩展名子路径解析
+```
+
+**提交前建议先清理**（沙箱里删不掉，`.gitignore` 已排除 `scripts/tmp-*` 与 `/.tmp/`）：
+
+```powershell
+Remove-Item scripts\tmp-*.mjs, scripts\tmp-*.ps1 -Force
+Remove-Item .tmp -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+**建议的提交信息**：
+
+```
+feat: 集成 Auth.js v5，支持 GitHub OAuth 与邮箱密码登录
+
+- auth.ts 配置 GitHub + Credentials 两个 provider，JWT 会话，PrismaAdapter 惰性创建
+- 登录/注册/登出页面与受保护路由（proxy.ts），Next 16 cacheComponents 下按 Suspense 结构实现
+- scrypt 密码哈希、站内跳转白名单、会话字段白名单（避免密码哈希进入 JWT）
+- 新增 4 个可重复运行的验证探针
+```
+
+---
+
 ## 2026-10-15 · 验证 Day 1 / Day 2 是否搭建完成并跑通
 
 **会话目标**：核对 [TASKS.md](../TASKS.md) 里标记为完成的 Day 1（初始化 + 部署）和 Day 2（数据库 + ORM）

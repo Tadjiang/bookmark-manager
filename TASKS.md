@@ -74,18 +74,38 @@
 
 ## 下一步
 
-### 🔐 Day 3 - 用户认证
-- [ ] **待定：登录方式走 GitHub OAuth、邮箱+密码，还是两者都要**（决定要不要加 bcrypt 之类依赖、以及 `.env` 密钥）
-- [ ] 安装 NextAuth.js（Auth.js）
-- [ ] 配置认证提供商（GitHub OAuth / 邮箱）
-- [ ] 实现登录页面
-- [ ] 实现注册页面
-- [ ] 实现登出功能
-- [ ] 添加受保护路由
+### ✅ Day 3 - 用户认证完成（2026-10-15）
+- [x] 确定登录方式：**GitHub OAuth + 邮箱+密码 两者都要**
+- [x] 安装并集成 Auth.js（NextAuth v5，`next-auth@5.0.0-beta.32`）
+- [x] 配置认证提供商：GitHub OAuth + Credentials（邮箱密码）
+- [x] 实现登录页面 `/signin`
+- [x] 实现注册页面 `/register`
+- [x] 实现登出功能
+- [x] 添加受保护路由 `/dashboard`（`proxy.ts` 拦截 + 页面内二次校验）
+- [x] 会话策略：JWT（有 Credentials provider 时 Auth.js 不允许数据库会话）
+- [x] 密码哈希：Node 内置 `scrypt`（零依赖，见 `lib/password.ts`）
+- [x] 未新增迁移（Day 2 已按 Auth.js 约定建好 4 张认证表，`passwordHash` 当时就是可空字段）
 
-> 动手前先看 [DECISIONS.md 第 4 节](./DECISIONS.md)：`PrismaAdapter(...)` **不能写在模块顶层**，
-> 否则会重演 Day 2 那次 Vercel 构建期缺 `DATABASE_URL` 导致的构建失败。
-> 认证用的 4 张表 Day 2 已按 Auth.js 约定建好，正常情况下 **Day 3 不需要新增迁移**。
+> 2026-10-15 验证（过程见 [docs/SESSION-RECORDS.md](./docs/SESSION-RECORDS.md)「第二轮」，
+> 逐条结果与排错见 [docs/DAY3-VERIFICATION.md](./docs/DAY3-VERIFICATION.md)）：
+>
+> | 验证项 | 结果 |
+> | --- | --- |
+> | `eslint` / `tsc --noEmit` | ✅ 0 错误 |
+> | 安全护栏探针（open redirect、会话字段白名单等 52 项） | ✅ `RESULT_OK` |
+> | adapter 契约探针（Prisma 7 上 14 个方法，19 项断言） | ✅ `RESULT_OK` |
+> | 邮箱+密码探针（16 项，含失败分支） | ✅ `RESULT_OK` |
+> | HTTP 端到端探针（dev） | ✅ `RESULT_OK` |
+> | HTTP 端到端探针（**生产构建**） | ✅ `RESULT_OK` |
+> | `npm run build` | ✅ exit 0，`BUILD_ID=bl4_ZobflmWcOEqijd9bz` |
+> | GitHub provider 条件注册 | ✅ 有凭据→注册并显示按钮；无凭据→隐藏并提示 |
+> | Day 2 回归 | ✅ `/api/health` 正常、探针通过、数据库回到基线 |
+>
+> ⏳ 仍待人工完成：**GitHub 真实授权往返**（会话内出网被禁）与**浏览器手测 10 条**
+> （清单见 [docs/DAY3-VERIFICATION.md](./docs/DAY3-VERIFICATION.md) 第 3 节）。
+>
+> 本轮踩到并修掉的 Next 16 硬约束：`cacheComponents` 与 `dynamic` 等段配置互斥
+> （[ISSUES #7](./docs/ISSUES.md)）、`middleware.ts` 已改名 `proxy.ts`（[ISSUES #8](./docs/ISSUES.md)）。
 
 ### 📌 Day 4 - 书签 CRUD
 - [ ] API 路由：POST /api/bookmarks（创建）
@@ -97,6 +117,14 @@
 - [ ] UI：书签列表
 - [ ] UI：搜索功能
 
+> Day 4 直接复用 Day 3 的成果：用 `auth()` 拿 `session.user.id` 作为 `userId` 过滤；
+> 页面/接口里同样注意 `cacheComponents` 的约束——读会话与查库都要放在 `<Suspense>` 内
+> （见 [ISSUES #7](./docs/ISSUES.md)）。
+>
+> **开工前先看规划：[docs/DAY4-PLAN.md](./docs/DAY4-PLAN.md)** —— 含接口形态取舍（Server Actions vs REST 路由）、
+> 标签输入方案、搜索实现层级、越权防护要点、验证计划，以及需要先拍板的 3 个问题。
+> 注意：若采用规划里的方案 A（Server Actions），需要把上面 5 条"API 路由"改写为"Server Actions + 查询"。
+
 ### 🎨 Day 5 - UI 优化 + 部署
 - [ ] 完善样式
 - [ ] 响应式设计测试
@@ -106,7 +134,12 @@
 
 ## 遗留待办
 
-- [ ] 删除 `scripts/tmp-grant-acl.ps1`（一次性权限修复脚本，内容已清空，沙箱内删不掉）
-- [ ] 决定 `scripts/verify-day2-probe.mjs`、`scripts/prisma-esm-hook.mjs` 的去留（当前未跟踪，可提交也可删除）
+- [ ] **用户先行验证后再提交**：本轮 Day 3 改动全部留在工作区未提交，待提交清单见
+      [docs/SESSION-RECORDS.md](./docs/SESSION-RECORDS.md)「第二轮」文末
+- [ ] 清理临时排查脚本（沙箱内删不掉，`.gitignore` 已排除）：
+      `Remove-Item scripts\tmp-*.mjs, scripts\tmp-*.ps1 -Force` 与 `Remove-Item .tmp -Recurse -Force`
+- [ ] 配好 GitHub OAuth App 凭据后，补一次 GitHub 登录的浏览器手测
 - [ ] `DECISIONS.md` 第 2 节仍写"线上用 PostgreSQL"，与第 5 节的 Turso 决策并存；按当前决定**暂不改**（已加阅读提示）
 - [ ] 若 `dev.db` 或 `.next` 再次出现"拒绝访问 / `os error 5`"，按 [docs/ISSUES.md](./docs/ISSUES.md) 的 #1 处理
+- [ ] 若 `npm run build` 报 `failed to create junction point`，打开 Windows 开发者模式或用管理员终端
+      （[ISSUES #9](./docs/ISSUES.md)）

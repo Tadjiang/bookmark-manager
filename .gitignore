@@ -46,3 +46,14 @@ next-env.d.ts
 *.db
 *.db-journal
 !.env.example
+
+# 本地 npm 缓存：受限环境（如 DSH 沙箱）里默认缓存目录不可写，
+# 用 `npm_config_cache=.npm-cache` 指到工作区内，避免装包时报 EPERM
+/.npm-cache/
+
+# 一次性排查脚本（跑完就该删，别提交）
+/scripts/tmp-*.mjs
+/scripts/tmp-*.ps1
+
+# 临时工作目录（提权执行脚本时的 TMPDIR）
+/.tmp/

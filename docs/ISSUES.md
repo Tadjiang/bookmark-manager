@@ -240,3 +240,183 @@ icacls "DECISIONS.md" /grant "$env:USERNAME:F"
 
 - 比较文件 ACL：能保存的文件里有 `S-1-4-*:(I)(W,D,DC)`，报 1175 的没有。
 - 报 1175 而不是 `Access denied`，通常意味着"能写内容、不能替换/删除"这一类权限缺失。
+
+---
+
+## #7 Next 16：`cacheComponents` 与路由段配置互斥（2026-10-15）
+
+**现象**
+
+页面在浏览器里 500，dev server 日志里是编译错误：
+
+```
+Error: Route segment config "dynamic" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+./app/dashboard/page.tsx:15:14
+> 15 | export const dynamic = "force-dynamic";
+```
+
+`next build` 阶段还会以另一种形式报出来：
+
+```
+Error: Route "/" : Next.js encountered uncached or runtime data during prerendering.
+`fetch(...)`, `cookies()`, `headers()`, `params`, `searchParams`, or `connection()` accessed outside of <Suspense>
+```
+
+**根因**
+
+`next.config.ts` 里开了 `cacheComponents: true`。Next 16 在这个模式下**移除了** `dynamic` / `revalidate` /
+`fetchCache` / `dynamicParams` 这些路由段配置（它们原来用来给整条路由选渲染模式）。同时，任何请求期数据
+（`cookies()`、`headers()`、`searchParams`、以及读会话的 `auth()`）**不能出现在 `<Suspense>` 之外**，
+否则无法生成静态外壳，构建直接失败。
+
+**解法**
+
+1. 删掉 `export const dynamic = "force-dynamic"` 之类的段配置。
+2. 把读请求期数据的部分下沉到 `<Suspense>` 后面：外层保持**同步**（只创建 Promise、不 await），
+   内层 async 组件里再 await。
+
+```tsx
+// app/dashboard/page.tsx —— 外层同步 → 可预渲染成静态外壳
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<DashboardSkeleton />}>
+      <DashboardContent />
+    </Suspense>
+  );
+}
+
+async function DashboardContent() {
+  const session = await auth();   // 读取发生在 Suspense 内，构建期不会执行
+  ...
+}
+```
+
+`searchParams` 同理：把 `Promise<SearchParams>` 当 props 传给 Suspense 内的组件，而不是在页面顶层 await。
+
+3. 实在来不及改造的路由，可以临时用 `export const instant = false` 让该路由继续阻塞渲染
+   （官方给的迁移过渡手段，见 `authentication-with-cache-components.md`），但推荐按第 2 步做。
+
+**怎么快速判断**
+
+- 报错里出现 `not compatible with nextConfig.cacheComponents` → 删段配置。
+- 报错里出现 `uncached or runtime data during prerendering` → 找哪个 `await` 读的是请求期数据，包进 `<Suspense>`。
+- 本地文档：`node_modules/next/dist/docs/01-app/02-guides/authentication-with-cache-components.md`、
+  `.../migrating-to-cache-components.md`。
+
+---
+
+## #8 Next 16：`middleware.ts` 弃用，改名 `proxy.ts`（2026-10-15）
+
+**现象**
+
+`next build` / `next dev` 打印：
+
+```
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+```
+
+两个文件同时存在时更直接：
+
+```
+Error: Both middleware file "./middleware.ts" and proxy file "./proxy.ts" are detected. Please use "./proxy.ts" only.
+```
+
+**根因**
+
+Next 16 把 `middleware` 改名为 `proxy`，以强调它是网络边界上的请求代理。同时：
+
+- 导出名建议从 `middleware` 改为 `proxy`（默认导出也行）；
+- **`proxy` 的运行时固定为 `nodejs`，不能再配置 `edge`**（想继续用 edge 就暂时保留 `middleware`）；
+- 相关配置项也改名，例如 `skipMiddlewareUrlNormalize` → `skipProxyUrlNormalize`。
+
+**解法**
+
+```bash
+mv middleware.ts proxy.ts
+```
+
+然后保留原逻辑与 `config.matcher`，导出函数名改成 `proxy`（本项目用 `export default auth(...)`）。
+本项目里对应 [proxy.ts](../proxy.ts)。
+
+**怎么快速判断**
+
+- 报 `Both middleware file ... and proxy file ... are detected` → 删掉 `middleware.ts`。
+- 别名作用一致，行为不会因为改名改变；记得 `config.matcher` 要跟着文件一起保留。
+
+---
+
+## #9 Windows 上 Turbopack 建不了 junction（2026-10-15）
+
+**现象**
+
+`npm run build` 在收集/编译阶段崩掉：
+
+```
+FATAL: An unexpected Turbopack error occurred.
+Error [TurbopackInternalError]: failed to create junction point at "...\.next\node_modules\@libsql\client-..."
+Caused by: creation of a new symbolic link or junction point failed: 拒绝访问。(os error 5)
+```
+
+**根因**
+
+Turbopack 会在 `.next/node_modules` 下为某些包创建 junction（目录符号链接）。Windows 默认**只有管理员
+或开启了"开发者模式"的用户**才有创建符号链接的权限，普通用户直接 `os error 5`。这和项目代码无关。
+
+**解法**
+
+任选其一：
+
+1. **打开开发者模式**（推荐）：设置 → 系统 → 开发者选项 → 开发者模式。
+2. 用**管理员终端**运行 `npm run build`。
+3. 改用 webpack 构建：`npm run build -- --webpack`（不需要 junction；本机实测能过编译阶段，
+   但受限沙箱里会另外卡在 `spawn EPERM`，见 #2）。
+
+**怎么快速判断**
+
+- 报错里出现 `failed to create junction point` / `os error 5` 且路径在 `.next\node_modules\` 下 → 就是这个。
+- 与 #1 的区别：#1 是文件/目录权限被外来账号占着（连 `.next` 本身都写不进），#9 是能写但没有建符号链接的特权。
+
+---
+
+## #10 受限沙箱的能力边界（2026-10-15）
+
+**现象**
+
+同一个环境里，有些命令莫名其妙失败，但换台机器就正常：
+
+```
+fork default (pipe+ipc): THROW EPERM spawn EPERM      ← child_process.fork 一律被拒
+fork stdio inherit:      THROW EPERM spawn EPERM
+spawn stdout inherit:    EXIT 1（能起，但子进程自身报错）
+spawn stdout pipe:       THROW EPERM spawn EPERM
+listen EACCES: permission denied 127.0.0.1:3000        ← 禁止监听端口
+OUTBOUND_FAIL: 连 github.com 都连不上                    ← 出网被禁
+```
+
+**根因**
+
+DSH 这类受限沙箱会按能力逐项收窄：禁止命名管道（因此 `fork` 与一切带 pipe 的 `spawn` 全失败）、
+禁止监听端口、禁止出网。`fork()` 无论 stdio 怎么配都不可用，因为它必须建立 IPC 通道。
+
+**影响与对策**
+
+| 场景 | 受限沙箱内 | 对策 |
+| --- | --- | --- |
+| `next dev` / `next build` | ❌ CLI 里 `fork(start-server)` | 在沙箱外跑；或直接调用内部 `startServer`（见下） |
+| `next build --webpack` | ❌ Next 会 spawn 类型检查/lint worker | 沙箱外跑 |
+| `npx prisma migrate status` / `studio` | ❌ 要 spawn schema-engine | 沙箱外跑；`prisma validate` 不受影响 |
+| 需要监听端口的验证 | ❌ `EACCES` | 申请一次更高权限，或沙箱外跑 |
+| Mock 外部 OAuth（github.com） | ❌ 出网被禁 | 只能验到"入口 302 到 github.com"，真实授权须在沙箱外做 |
+| `node 脚本.mjs`（纯计算 + 文件读写） | ✅ | 探针脚本都按这个方式写 |
+
+**绕过 `fork` 起服务的写法**（会话内验证时用过）：不走 CLI，直接调用 Next 内部启动器，
+这样进程模型里没有 `fork`：
+
+```js
+import { startServer } from "../node_modules/next/dist/server/lib/start-server.js";
+
+await startServer({ dir: process.cwd(), port: 3100, isDev: true, hostname: "127.0.0.1" });
+```
+
+配合 `spawn(..., { stdio: "inherit" })` 启动即可；但**仍需**解除端口监听限制，否则报 `EACCES`。
+

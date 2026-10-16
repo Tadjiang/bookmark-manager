@@ -186,13 +186,14 @@ Free Plan       → Pro Plan        → 按需付费
 | **框架** | Next.js + TS | 全栈一体、开发效率、生态成熟 |
 | **DB** | SQLite 文件 (dev) + 远端 libSQL (prod)；PG 待定 | 开发无配置 + 线上零重写（见第 5 节，PG 推迟） |
 | **ORM** | Prisma | 统一接口、自动迁移、类型安全 |
+| **认证** | Auth.js v5 + JWT 会话，GitHub OAuth 与邮箱密码并存 | 两种登录方式必须共用一套会话（见第 8 节） |
 | **部署** | Vercel | 零运维、官方推荐、成本低 |
 
 这些决策优先考虑 **MVP 阶段的快速迭代**，后续可根据业务增长灵活调整。
 
 > 阅读提示：本节的"DB"一行是**最初立项时**的计划。线上数据库实际已改为 Turso（远端 libSQL），
 > PostgreSQL 推迟——见第 5 节；第 2 节仍保留当时的 PostgreSQL 论证，作为切换时的参考，**当前不生效**。
-> 验证手段与脚本相关的新决策见第 6、7 节。
+> 另外：验证手段与脚本见第 6、7 节，认证选型见第 8 节，`cacheComponents` 下的页面写法见第 9 节。
 
 ---
 
@@ -321,4 +322,108 @@ imported from ...\app\generated\prisma\client.ts
   这是噪音，**不要**为了消警告去加 `"type": "module"`（会影响 Next.js 的模块判定）。
 - 顺带记录一个上游缺口：Prisma 7.10.0 的 `prisma studio` 用 `split("://")` 判断协议，导致 `file:./dev.db`
   被误判为不支持的协议；绕过写法是 `--url "file:///绝对路径/dev.db"`。见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #3，待上游修复后可去掉这个绕法。
+
+---
+
+## 8. 认证：JWT 会话 + scrypt 哈希 + 惰性 adapter（2026-10-15）
+
+### 背景
+
+Day 3 要同时支持 GitHub OAuth 与邮箱+密码。选型要同时满足三个约束：能装（本机缺原生编译工具链）、
+能构建（Vercel 构建期没有数据库凭据）、能测（关键路径要能脱离浏览器验证）。
+
+### 决策
+
+**1）会话策略用 JWT，而不是数据库会话。**
+
+Auth.js 不允许 Credentials provider 使用数据库会话——它无法为"凭据登录"创建 Session 记录。
+既然两种登录方式要共存，就只能统一走 JWT。
+
+- 代价：`Session` 表闲置（表保留，将来若去掉密码登录、改用数据库会话可直接复用，不需要迁移）。
+- 收益：`proxy.ts` 里不需要查库就能做乐观鉴权（JWT 的签名校验是纯计算），受保护路由的拦截成本极低。
+- 副作用与对策：JWT 是**编码**而非加密，token 内容会进 cookie。因此 `jwt` 回调必须用白名单
+  （`toSessionUser()` 只放 id/name/email/picture）——`PrismaAdapter` 返回的是整行 `User`，
+  含 `passwordHash`，原样塞进去等于把密码哈希写进用户 cookie 和 `/api/auth/session` 响应。
+
+**2）密码哈希用 Node 内置 `crypto.scrypt`，不引 bcrypt。**
+
+`bcrypt` 需要原生编译（本机缺 Python，Day 2 装 `better-sqlite3` 时踩过这个坑），`bcryptjs` 是纯 JS 实现、较慢。
+`scrypt` 是内存硬函数、抗 GPU 更好，且零依赖。存储格式自描述（`scrypt$N$r$p$salt$key`），
+以后调参或换算法不会破坏旧数据；参数校验失败按"验证失败"处理而不是抛错。
+
+**3）PrismaAdapter 必须惰性创建。**
+
+不能写 `adapter: PrismaAdapter(getPrisma())`：模块被 import 的瞬间就会调 `getPrisma()`，
+而它在缺少 `DATABASE_URL` 时 throw——`next build` 收集路由信息时会求值顶层代码，
+构建机上没有 `.env`，于是整个构建失败（与第 4 节记的是同一个坑的另一个入口）。
+用 Proxy 把创建推迟到真正调用某个 adapter 方法时（即请求期），并保留一个探针
+（在无 `DATABASE_URL` 环境下 import `auth.ts`）来防止以后改回去。
+
+**4）调转目标只允许站内相对路径。**
+
+登录页会带 `?callbackUrl=` 并在登录成功后跳过去。直接信任该参数就是一个 open redirect
+（常用于钓鱼跳板）。`lib/safe-redirect.ts` 只放行单个 `/` 开头的路径，明确拒绝 `//host`、
+`/\host`、含反斜杠与控制字符的输入。
+
+### 代价与遗留
+
+- 官方 `@auth/prisma-adapter` 的 peerDependencies 只声明到 `@prisma/client >=6`，而本项目是 Prisma 7。
+  实测运行时兼容（`scripts/verify-auth-adapter.mjs` 覆盖 14 个方法），但没有官方保证，
+  升级 Prisma 或 adapter 时要重跑该探针。
+- 官方 adapter 期望一个 `Authenticator` 模型（WebAuthn 用），本项目的 schema 没有。
+  当前不使用 Passkey，因此不受影响；将来要做 Passkey 需补该模型与迁移。
+- 邮箱+密码路径**没有邮件验证与找回密码**，属于 MVP 范围内的取舍；上线前若要开放注册，
+  至少需要补限流（防撞库）与邮件验证。
+
+---
+
+## 9. 在 `cacheComponents` 下实现需要登录态的页面（2026-10-15）
+
+### 背景
+
+`next.config.ts` 开了 `cacheComponents: true`。落地 Day 3 时，首页与 `/dashboard` 直接写
+`export const dynamic = "force-dynamic"` 想让页面按请求渲染，结果**整条路由编译失败、页面 500**：
+
+```
+Route segment config "dynamic" is not compatible with `nextConfig.cacheComponents`. Please remove it.
+```
+
+改掉段配置后又换成构建期报错：
+
+```
+Route "/": Next.js encountered uncached or runtime data during prerendering.
+`cookies()`, `headers()`, `searchParams` ... accessed outside of `<Suspense>`
+```
+
+### 决策
+
+Next 16 在 `cacheComponents` 下**移除了** `dynamic` / `revalidate` / `fetchCache` / `dynamicParams`
+这些路由段配置，并用"每个路由都要能产出静态外壳"取代了原来的整路由渲染模式选择。
+因此凡是读请求期数据（`auth()` 读会话 cookie、`searchParams`、数据库查询）的页面，统一采用：
+
+**静态外壳（同步、可预渲染）+ 请求期数据下沉到 `<Suspense>`**
+
+```tsx
+export default function DashboardPage() {          // 同步：构建期就能渲染出外壳
+  return (
+    <Suspense fallback={<DashboardSkeleton />}>
+      <DashboardContent />                          // 内部才 await auth() / 查库
+    </Suspense>
+  );
+}
+```
+
+要点：
+
+- 外层**只创建 Promise 不 await**（`searchParams` 就是这种用法，作为 prop 往下传）；
+- 每个 `<Suspense>` 配一个与真实布局**同构**的骨架屏，避免流式替换时页面跳动；
+- 官方给的过渡手段 `export const instant = false`（让单个路由继续阻塞渲染）本项目**没有使用**，
+  四个页面都按上面的结构实现。
+
+### 代价与遗留
+
+- 每个需要登录态的页面都要拆成"外壳 + 内容"两个组件，比 `force-dynamic` 时代多一层结构。
+- 已经改过一次的错误写法（`dynamic = "force-dynamic"`）容易被后来者"补回去"，
+  因此把这条约束同时写进了 [AGENTS.md](./AGENTS.md)、[docs/ISSUES.md](./docs/ISSUES.md) 的 #7
+  与 README 的常见问题表。
 
