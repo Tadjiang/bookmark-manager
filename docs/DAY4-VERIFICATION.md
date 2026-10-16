@@ -22,23 +22,31 @@
 | Day 2 回归 | `node scripts/verify-day2-probe.mjs` | ✅ `RESULT_OK` |
 | Day 3 回归（护栏） | `node scripts/verify-auth-guards.mjs` | ✅ `RESULT_OK` |
 | Day 3 回归（adapter 契约） | `node scripts/verify-auth-adapter.mjs` | ✅ `RESULT_OK` |
-| 生产构建 | `npm run build` | ❌ 见下 |
+| 生产构建 | `npm run build` | ✅ exit 0（会话外终端；会话内会报 junction point，见下） |
+| 浏览器手测 12 条 | 人工（2026-10-16） | ✅ 全部通过 |
 
-### 构建为什么失败（不是代码问题）
+### 构建结果（2026-10-16，用户在会话外跑通）
 
 ```
-failed to create junction point at ".next\node_modules\@libsql\client-..."
-Caused by: creation of a new symbolic link or junction point failed: 拒绝访问。(os error 5)
+✓ Compiled successfully in 910ms
+  Finished TypeScript in 2.9s
+✓ Generating static pages (8/8)
+
+Route (app)
+○ /                     ○ /_not-found        ƒ /api/auth/[...nextauth]
+ƒ /api/health           ◐ /dashboard          ○ /register
+○ /signin
+ƒ Proxy (Middleware)
 ```
 
-就是 [ISSUES #9](./ISSUES.md) 记的那条：Turbopack 需要在 `.next/node_modules` 下建符号链接，
-Windows 默认只允许管理员或开了「开发者模式」的账号创建。修法二选一：
+**`/dashboard` 是 `◐`（Partial Prerender）——这条就是 Day 4 结构写对了的证据**：
+外层静态外壳能预渲染，书签列表作为动态内容流式补上。如果 `auth()` / `searchParams` / 查库
+被写在页面顶层，或者有人补回了段配置，构建会在「收集页面数据」阶段直接失败
+（[ISSUES #7](./ISSUES.md)），而不是产出 `◐`。
 
-1. 设置 → 系统 → 开发者选项 → 打开**开发者模式**（改完重开终端）；
-2. 或在**管理员**终端里跑 `npm run build`。
-
-**注意**：本次构建已经越过了 Day 3 记录过的 `spawn EPERM`（CLI 真的跑起来了，走到了 Turbopack 阶段），
-说明当前会话的子进程限制比之前宽松；卡住的是 Windows 的符号链接权限，与沙箱无关。
+> 会话内跑同一条命令会在 Turbopack 建 `.next/node_modules` 符号链接时被拒
+> （`failed to create junction point ... 拒绝访问。(os error 5)`），见 [ISSUES #9](./ISSUES.md)：
+> 需要 Windows「开发者模式」或管理员终端。这是环境限制，不是代码问题。
 
 ## 3. 探针覆盖了什么、没覆盖什么
 
@@ -64,10 +72,14 @@ Windows 默认只允许管理员或开了「开发者模式」的账号创建。
   - `updateBookmark` 必须先经 `findOwnedId`；
   - Server Actions 必须调 `refresh()`、必须用 `isRedirectError` 放行跳转；
   - dashboard 页面不许出现 `dynamic` 段配置（[ISSUES #7](./ISSUES.md)）。
-- **UI 完全不覆盖**。表单交互、防抖、行内编辑、二次确认都只能在浏览器里手点，清单见第 4 节。
+- **UI 层由人工手测覆盖**（见第 4 节）。表单交互、防抖、行内编辑、二次确认这些只能在浏览器里点，
+  探针碰不到；所以这一节的"没覆盖"不是省略，而是明确划给人工。
 - **限流不存在**。新增书签没有速率限制，公网开放前要补（见 [DECISIONS.md](../DECISIONS.md) 第 10 节的遗留）。
 
-## 4. 浏览器手测清单（人工，需要在会话外跑 `npm run dev`）
+## 4. 浏览器手测清单（人工）
+
+> **执行记录**：2026-10-16，用户在本地 `npm run dev` 下手测，**12 条全部通过**。
+> 下表保留为回归清单——Day 5 改 UI 之后建议重跑一遍。
 
 | # | 操作 | 预期 |
 | --- | --- | --- |
@@ -83,6 +95,7 @@ Windows 默认只允许管理员或开了「开发者模式」的账号创建。
 | 10 | 删除时点「取消」 | 什么都不发生 |
 | 11 | 换一个账号登录 | 看不到上一个账号的书签、标签，搜索也不串号 |
 | 12 | 窄屏（375px） | 单列布局，不出现横向滚动 |
+
 
 ## 5. 排错对照表
 

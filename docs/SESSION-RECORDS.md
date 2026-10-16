@@ -75,18 +75,26 @@
 | `node scripts/verify-bookmarks-probe.mjs` | ✅ `RESULT_OK`（23 项，`BASELINE == FINAL`） |
 | Day 2 回归 `verify-day2-probe.mjs` | ✅ `RESULT_OK` |
 | Day 3 回归 `verify-auth-guards.mjs` / `verify-auth-adapter.mjs` | ✅ `RESULT_OK` |
-| `npm run build` | ❌ Turbopack 建不了 junction（[ISSUES #9](./ISSUES.md)） |
+| `npm run build`（会话外，用户执行） | ✅ exit 0，8 条路由，`/dashboard` 为 `◐ Partial Prerender` |
 
-> 构建这次**不再是** `spawn EPERM`——CLI 真跑起来了、走到了 Turbopack 阶段，
-> 卡在 Windows 的符号链接权限上（需开发者模式或管理员终端）。见 Day 4 验证文档第 2 节。
+> 构建在会话内会卡在 Turbopack 的符号链接权限（[ISSUES #9](./ISSUES.md)）——这次**不再是**
+> `spawn EPERM`，CLI 真跑起来了、走到了 Turbopack 阶段，说明当前会话的子进程限制比 Day 3 宽松。
+> 在会话外（普通终端）跑则一切正常。
 
-### 会话内没能完成的事（需要用户）
+### 会话外补完（同日，由用户执行）
 
-1. `npm run build`：开 Windows 开发者模式，或用管理员终端跑一次；
-2. `npm run dev` + 浏览器手测 12 条（清单见 [DAY4-VERIFICATION.md](./DAY4-VERIFICATION.md) 第 4 节）；
-3. 可选：在管理员终端把 `lib`、`scripts`、`prisma` 的属主改回自己
-   （`takeown /F <目录> /R /D Y` + `icacls <目录> /grant "%USERNAME%:(OI)(CI)F" /T /C`），
-   以后就不用再依赖「完全权限」。
+1. **`npm run build` ✅ 通过**：`✓ Compiled successfully`，8 条路由；
+   `/dashboard` 是 `◐ Partial Prerender`——正是"静态外壳 + 动态流式内容"的预期形态，
+   也算从构建产物反证了 cacheComponents 的写法没跑偏。会话内跑会因为 Turbopack
+   建不了 `.next/node_modules` 符号链接而失败（[ISSUES #9](./ISSUES.md)），属环境限制。
+2. **浏览器手测 12 条 ✅ 全部通过**（清单见 [DAY4-VERIFICATION.md](./DAY4-VERIFICATION.md) 第 4 节）。
+
+### 仍未做（可选的收尾）
+
+- 在管理员终端把 `lib`、`scripts`、`prisma` 的属主改回自己，这样后续沙箱会话不再依赖「完全权限」：
+  `takeown /F <目录> /R /D Y` + `icacls <目录> /grant "%USERNAME%:(OI)(CI)F" /T /C`，
+  详见 [ISSUES #11](./ISSUES.md)。
+- 公网开放前补限流（[DECISIONS.md](../DECISIONS.md) 第 10 节的遗留）。
 
 ### 本次新增/修改的文件
 

@@ -129,9 +129,10 @@
 > | 输入校验 + 标签归一化 + 静态护栏（48 项） | ✅ `RESULT_OK` |
 > | 数据库链路（越权/搜索/筛选/级联，23 项） | ✅ `RESULT_OK`，`BASELINE == FINAL` |
 > | Day 2 / Day 3 回归探针 | ✅ 全部 `RESULT_OK` |
-> | `npm run build` | ❌ Turbopack 建不了 junction（[ISSUES #9](./docs/ISSUES.md)），需开发者模式或管理员终端 |
+> | `npm run build` | ✅ exit 0，8 条路由；`/dashboard` 为 `◐ Partial Prerender`（会话内会卡在 junction point，见 [ISSUES #9](./docs/ISSUES.md)） |
+> | 浏览器手测 12 条 | ✅ 2026-10-16 全部通过（清单见 [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 4 节） |
 >
-> ⏳ 仍待人工：**浏览器手测 12 条**（清单见 [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 4 节）。
+> Day 4 已全部完成并提交（`a054920`）。
 
 ### 🎨 Day 5 - UI 优化 + 部署
 - [ ] 完善样式
@@ -143,11 +144,10 @@
 ## 遗留待办
 
 - [x] ~~**用户先行验证后再提交**：Day 3 改动~~ → 已于 2026-10-16 提交（`64a3878`）
-- [ ] **Day 4 改动已提交，但 `npm run build` 与浏览器手测仍需会话外完成**：
-      开 Windows「开发者模式」或用管理员终端跑 `npm run build`；手测清单见
-      [docs/DAY4-VERIFICATION.md](./docs/DAY4-VERIFICATION.md) 第 4 节
+- [x] ~~**Day 4 的 `npm run build` 与浏览器手测**~~ → 2026-10-16 均已完成：构建 exit 0
+      （8 条路由，`/dashboard` 为 `◐`），浏览器手测 12 条全部通过
 - [ ] **`lib`、`scripts`、`prisma` 的属主仍是外来账号 `Rebirth\CodexSandboxOffline`**：
-      本会话是靠「完全权限」绕过写入限制的；建议在管理员终端执行
+      沙箱会话是靠「完全权限」绕过写入限制的；建议在管理员终端执行
       `takeown /F <目录> /R /D Y` + `icacls <目录> /grant "%USERNAME%:(OI)(CI)F" /T /C`
       把属主改回自己，详见 [docs/ISSUES.md](./docs/ISSUES.md) 的 #11
 - [ ] 清理临时排查脚本（沙箱内删不掉，`.gitignore` 已排除）：
